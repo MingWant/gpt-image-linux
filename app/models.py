@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional
 from datetime import datetime
 
@@ -13,18 +13,42 @@ class SettingsResponse(BaseModel):
     api_key_masked: str
 
 
+def validate_image_size(size: str) -> str:
+    if size == "auto":
+        return size
+
+    try:
+        width_text, height_text = size.lower().split("x", 1)
+        width = int(width_text)
+        height = int(height_text)
+    except (AttributeError, ValueError):
+        raise ValueError("size must be 'auto' or formatted as WIDTHxHEIGHT")
+
+    pixels = width * height
+    aspect = max(width / height, height / width)
+
+    if width % 16 != 0 or height % 16 != 0:
+        raise ValueError("size width and height must be multiples of 16")
+    if width <= 0 or height <= 0 or max(width, height) > 3840:
+        raise ValueError("size width and height must be positive, with max side <= 3840")
+    if aspect > 3:
+        raise ValueError("size aspect ratio must not exceed 3:1")
+    if pixels < 655360 or pixels > 8294400:
+        raise ValueError("size total pixels must be between 655360 and 8294400")
+
+    return f"{width}x{height}"
+
+
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., max_length=4000)
-    size: Literal[
-        "1024x1024",
-        "1024x1792",
-        "1792x1024",
-        "1536x1024",
-        "1024x1536",
-        "2048x2048",
-    ] = "1024x1024"
+    size: str = "1024x1024"
     model: str = "gpt-image-2"
     n: int = Field(default=1, ge=1, le=10)
+
+    @field_validator("size")
+    @classmethod
+    def validate_size(cls, value: str) -> str:
+        return validate_image_size(value)
 
 
 class GalleryEntry(BaseModel):

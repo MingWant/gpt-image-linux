@@ -51,6 +51,35 @@
     .gallery-card:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
     .drawer-backdrop { background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
     .progress-bar { animation: indeterminate 1.5s ease-in-out infinite; }
+    .size-dialog-backdrop {
+      background: rgba(9, 9, 11, 0.72);
+      backdrop-filter: blur(8px);
+    }
+    .size-panel {
+      background:
+        radial-gradient(circle at top right, rgba(16, 185, 129, 0.12), transparent 36%),
+        #18181b;
+    }
+    .size-tab,
+    .size-choice {
+      border: 1px solid #3f3f46;
+      color: #a1a1aa;
+      background: rgba(39, 39, 42, 0.55);
+      transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+    }
+    .size-tab:hover,
+    .size-choice:hover {
+      border-color: #52525b;
+      color: #f4f4f5;
+      background: rgba(39, 39, 42, 0.9);
+    }
+    .size-tab.active,
+    .size-choice.active {
+      border-color: #10b981;
+      color: #ecfdf5;
+      background: rgba(16, 185, 129, 0.14);
+      box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.2);
+    }
     @keyframes indeterminate {
       0%   { transform: translateX(-100%) scaleX(0.5); }
       50%  { transform: translateX(0%)   scaleX(0.5); width: 50%; }
@@ -157,14 +186,18 @@
         <div class="flex flex-col sm:flex-row gap-4">
           <div class="flex-1">
             <label class="block text-sm font-medium text-zinc-300 mb-2">Image Size</label>
-            <select id="sizeSelect" class="w-full bg-zinc-800/80 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors cursor-pointer appearance-none">
-              <option value="1024x1024">1024 x 1024 (Square)</option>
-              <option value="1024x1792">1024 x 1792 (Portrait)</option>
-              <option value="1792x1024">1792 x 1024 (Landscape)</option>
-              <option value="1536x1024">1536 x 1024 (3:2)</option>
-              <option value="1024x1536">1024 x 1536 (2:3)</option>
-              <option value="2048x2048">2048 x 2048 (High Res)</option>
-            </select>
+            <button id="sizeSelect" type="button" value="1024x1024" onclick="openSizeDialog()"
+              class="w-full bg-zinc-800/80 border border-zinc-700 rounded-xl px-4 py-3 text-left text-sm text-zinc-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+              <span class="flex items-center justify-between gap-3">
+                <span class="min-w-0">
+                  <span id="sizeSelectLabel" class="block font-medium truncate">1024 x 1024</span>
+                  <span id="sizeSelectMeta" class="block text-xs text-zinc-500 truncate">Ratio · 1K · 1:1</span>
+                </span>
+                <svg class="w-4 h-4 text-zinc-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6"/>
+                </svg>
+              </span>
+            </button>
           </div>
           <div class="flex-1">
             <label class="block text-sm font-medium text-zinc-300 mb-2">Model</label>
@@ -257,17 +290,145 @@
     </div>
   </div>
 
+  <!-- Size Dialog -->
+  <div id="sizeDialog" class="fixed inset-0 z-50 hidden">
+    <div class="size-dialog-backdrop absolute inset-0" onclick="closeSizeDialog()"></div>
+    <div class="relative min-h-full flex items-center justify-center p-4">
+      <div class="size-panel w-full max-w-xl max-h-[92vh] overflow-y-auto border border-zinc-800 rounded-2xl shadow-2xl fade-in">
+        <div class="p-5 sm:p-6 border-b border-zinc-800 flex items-start justify-between gap-4">
+          <div>
+            <h2 class="text-xl font-semibold text-zinc-100">Set Image Size</h2>
+            <p class="mt-1 text-sm text-zinc-500">Current: <span id="sizeCurrentValue" class="font-medium text-zinc-400">1024 x 1024</span></p>
+          </div>
+          <button type="button" onclick="closeSizeDialog()"
+            class="p-2 rounded-lg text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition-colors" aria-label="Close image size dialog">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="p-5 sm:p-6 space-y-6">
+          <div class="grid grid-cols-3 gap-2 rounded-xl bg-zinc-950/50 p-1">
+            <button type="button" data-size-tab="auto" onclick="selectSizeMode('auto')" class="size-tab rounded-lg px-3 py-3 text-sm font-semibold">Auto</button>
+            <button type="button" data-size-tab="ratio" onclick="selectSizeMode('ratio')" class="size-tab rounded-lg px-3 py-3 text-sm font-semibold">Ratio</button>
+            <button type="button" data-size-tab="custom" onclick="selectSizeMode('custom')" class="size-tab rounded-lg px-3 py-3 text-sm font-semibold">Custom Size</button>
+          </div>
+
+          <div id="sizeAutoPanel" class="hidden min-h-64 flex flex-col items-center justify-center text-center">
+            <div class="w-16 h-16 rounded-2xl bg-emerald-500/10 flex items-center justify-center mb-5">
+              <svg class="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M13 3L4 14h7l-1 7 10-12h-7l0-6z"/>
+              </svg>
+            </div>
+            <h3 class="text-lg font-semibold text-zinc-100">Auto Size</h3>
+            <p class="mt-2 max-w-xs text-sm leading-6 text-zinc-500">Pass <span class="font-mono text-zinc-300">auto</span> and let the model choose the output size from the prompt and model capabilities.</p>
+          </div>
+
+          <div id="sizeRatioPanel" class="hidden space-y-5">
+            <div>
+              <p class="text-sm font-medium text-zinc-400 mb-3">Base Resolution</p>
+              <div class="grid grid-cols-3 gap-3">
+                <button type="button" data-size-base="1K" onclick="selectSizeBase('1K')" class="size-choice rounded-xl px-3 py-3 text-sm font-semibold">1K</button>
+                <button type="button" data-size-base="2K" onclick="selectSizeBase('2K')" class="size-choice rounded-xl px-3 py-3 text-sm font-semibold">2K</button>
+                <button type="button" data-size-base="4K" onclick="selectSizeBase('4K')" class="size-choice rounded-xl px-3 py-3 text-sm font-semibold">4K</button>
+              </div>
+            </div>
+            <div>
+              <p class="text-sm font-medium text-zinc-400 mb-3">Aspect Ratio</p>
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <button type="button" data-size-ratio="1:1" onclick="selectSizeRatio('1:1')" class="size-choice rounded-xl px-3 py-3 text-sm font-semibold">1:1</button>
+                <button type="button" data-size-ratio="4:3" onclick="selectSizeRatio('4:3')" class="size-choice rounded-xl px-3 py-3 text-sm font-semibold">4:3</button>
+                <button type="button" data-size-ratio="3:4" onclick="selectSizeRatio('3:4')" class="size-choice rounded-xl px-3 py-3 text-sm font-semibold">3:4</button>
+                <button type="button" data-size-ratio="16:9" onclick="selectSizeRatio('16:9')" class="size-choice rounded-xl px-3 py-3 text-sm font-semibold">16:9</button>
+                <button type="button" data-size-ratio="9:16" onclick="selectSizeRatio('9:16')" class="size-choice rounded-xl px-3 py-3 text-sm font-semibold">9:16</button>
+                <button type="button" data-size-ratio="21:9" onclick="selectSizeRatio('21:9')" class="size-choice rounded-xl px-3 py-3 text-sm font-semibold">21:9</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="sizeCustomPanel" class="hidden space-y-5">
+            <div>
+              <p class="text-sm font-medium text-zinc-400 mb-3">Enter Exact Pixel Values</p>
+              <div class="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
+                <label class="block" for="customWidthInput">
+                  <span class="block text-sm text-zinc-500 mb-2">Width</span>
+                  <input id="customWidthInput" type="text" inputmode="numeric" autocomplete="off" value="1024"
+                    oninput="handleCustomSizeInput('width', this.value)"
+                    class="w-full bg-zinc-950/60 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors">
+                </label>
+                <span class="pb-3 text-xl text-zinc-600">×</span>
+                <label class="block" for="customHeightInput">
+                  <span class="block text-sm text-zinc-500 mb-2">Height</span>
+                  <input id="customHeightInput" type="text" inputmode="numeric" autocomplete="off" value="1024"
+                    oninput="handleCustomSizeInput('height', this.value)"
+                    class="w-full bg-zinc-950/60 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-100 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 transition-colors">
+                </label>
+              </div>
+            </div>
+            <div class="flex gap-3 rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-4 text-sm leading-6 text-emerald-100">
+              <svg class="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              <p>Values are normalized to a valid size: width and height must be multiples of 16, max side is 3840px, aspect ratio cannot exceed 3:1, and total pixels must be 655360-8294400.</p>
+            </div>
+          </div>
+
+          <div class="rounded-xl bg-zinc-950/45 border border-zinc-800 p-4">
+            <p class="text-sm font-medium text-zinc-500">Will Use</p>
+            <div class="mt-2 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+              <p id="sizeResultValue" class="font-mono text-2xl font-semibold text-zinc-100">1024x1024</p>
+              <p id="sizeResultMeta" class="text-sm text-zinc-500">Ratio · 1K · 1:1</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="p-5 sm:p-6 border-t border-zinc-800 grid grid-cols-2 gap-3">
+          <button type="button" onclick="closeSizeDialog()"
+            class="px-4 py-3 rounded-xl bg-zinc-800 text-zinc-300 text-sm font-semibold hover:bg-zinc-700 transition-colors">Cancel</button>
+          <button type="button" onclick="applySizeDialog()"
+            class="px-4 py-3 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-500 transition-colors">Confirm</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     // State
     let currentImageUrl = null;
     let currentFilename = null;
     let lastRequestBody = null;
+    const SIZE_LIMITS = {
+      step: 16,
+      maxSide: 3840,
+      maxAspect: 3,
+      minPixels: 655360,
+      maxPixels: 8294400,
+    };
+    const SIZE_BASES = { '1K': 1024, '2K': 2048, '4K': 3840 };
+    const SIZE_RATIOS = {
+      '1:1': [1, 1],
+      '4:3': [4, 3],
+      '3:4': [3, 4],
+      '16:9': [16, 9],
+      '9:16': [9, 16],
+      '21:9': [21, 9],
+    };
+    let sizeState = {
+      mode: 'ratio',
+      base: '1K',
+      ratio: '1:1',
+      customWidth: '1024',
+      customHeight: '1024',
+    };
+    let stagedSizeState = cloneSizeState(sizeState);
 
     // Init
     (async function() {
       await loadGallery();
       await loadSettings();
       document.getElementById('promptInput').addEventListener('input', updatePromptLen);
+      renderSizeButton();
     })();
 
     async function loadSettings() {
@@ -317,18 +478,227 @@
       el.className = len > 4000 ? 'text-xs text-red-500' : len > 3000 ? 'text-xs text-yellow-600' : 'text-xs text-zinc-600';
     }
 
+    function cloneSizeState(state) {
+      return { ...state };
+    }
+
+    function formatSizeValue(value) {
+      return value === 'auto' ? 'auto' : value.replace('x', ' x ');
+    }
+
+    function parsePositiveInt(value, fallback) {
+      const parsed = Number.parseInt(String(value).replace(/[^\d]/g, ''), 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    }
+
+    function roundToStep(value, mode = 'nearest') {
+      const scaled = value / SIZE_LIMITS.step;
+      const rounded = mode === 'up' ? Math.ceil(scaled) : mode === 'down' ? Math.floor(scaled) : Math.round(scaled);
+      return Math.max(SIZE_LIMITS.step, rounded * SIZE_LIMITS.step);
+    }
+
+    function fitPixels(width, height, mode) {
+      const pixelLimit = mode === 'min' ? SIZE_LIMITS.minPixels : SIZE_LIMITS.maxPixels;
+      const scale = Math.sqrt(pixelLimit / (width * height));
+      const roundMode = mode === 'min' ? 'up' : 'down';
+      let nextWidth = Math.min(SIZE_LIMITS.maxSide, roundToStep(width * scale, roundMode));
+      let nextHeight = Math.min(SIZE_LIMITS.maxSide, roundToStep(height * scale, roundMode));
+
+      if (mode === 'min') {
+        while (nextWidth * nextHeight < SIZE_LIMITS.minPixels) {
+          if (nextWidth <= nextHeight && nextWidth < SIZE_LIMITS.maxSide) {
+            nextWidth += SIZE_LIMITS.step;
+          } else if (nextHeight < SIZE_LIMITS.maxSide) {
+            nextHeight += SIZE_LIMITS.step;
+          } else {
+            break;
+          }
+        }
+      } else {
+        while (nextWidth * nextHeight > SIZE_LIMITS.maxPixels) {
+          if (nextWidth >= nextHeight && nextWidth > SIZE_LIMITS.step) {
+            nextWidth -= SIZE_LIMITS.step;
+          } else if (nextHeight > SIZE_LIMITS.step) {
+            nextHeight -= SIZE_LIMITS.step;
+          } else {
+            break;
+          }
+        }
+      }
+
+      return [nextWidth, nextHeight];
+    }
+
+    function normalizeDimensions(inputWidth, inputHeight) {
+      let width = Math.min(roundToStep(parsePositiveInt(inputWidth, 1024)), SIZE_LIMITS.maxSide);
+      let height = Math.min(roundToStep(parsePositiveInt(inputHeight, 1024)), SIZE_LIMITS.maxSide);
+
+      if (width / height > SIZE_LIMITS.maxAspect) {
+        height = roundToStep(width / SIZE_LIMITS.maxAspect, 'up');
+      } else if (height / width > SIZE_LIMITS.maxAspect) {
+        width = roundToStep(height / SIZE_LIMITS.maxAspect, 'up');
+      }
+
+      if (width * height < SIZE_LIMITS.minPixels) {
+        [width, height] = fitPixels(width, height, 'min');
+      }
+
+      if (width * height > SIZE_LIMITS.maxPixels) {
+        [width, height] = fitPixels(width, height, 'max');
+      }
+
+      if (width / height > SIZE_LIMITS.maxAspect) {
+        height = roundToStep(width / SIZE_LIMITS.maxAspect, 'up');
+      } else if (height / width > SIZE_LIMITS.maxAspect) {
+        width = roundToStep(height / SIZE_LIMITS.maxAspect, 'up');
+      }
+
+      if (width * height > SIZE_LIMITS.maxPixels) {
+        [width, height] = fitPixels(width, height, 'max');
+      }
+
+      return { width, height };
+    }
+
+    function getRatioResolution(state) {
+      const baseSide = SIZE_BASES[state.base] || SIZE_BASES['1K'];
+      const [ratioWidth, ratioHeight] = SIZE_RATIOS[state.ratio] || SIZE_RATIOS['1:1'];
+      const isLandscape = ratioWidth >= ratioHeight;
+      const width = isLandscape ? baseSide : Math.round(baseSide * ratioWidth / ratioHeight);
+      const height = isLandscape ? Math.round(baseSide * ratioHeight / ratioWidth) : baseSide;
+      return normalizeDimensions(width, height);
+    }
+
+    function getCustomResolution(state) {
+      return normalizeDimensions(state.customWidth, state.customHeight);
+    }
+
+    function getSizeValue(state) {
+      if (state.mode === 'auto') return 'auto';
+      const resolution = state.mode === 'custom' ? getCustomResolution(state) : getRatioResolution(state);
+      return `${resolution.width}x${resolution.height}`;
+    }
+
+    function getSizeMeta(state) {
+      if (state.mode === 'auto') return 'Auto';
+      if (state.mode === 'custom') return 'Custom';
+      return `Ratio · ${state.base} · ${state.ratio}`;
+    }
+
+    function updateActiveSizeControls() {
+      document.querySelectorAll('[data-size-tab]').forEach(button => {
+        button.classList.toggle('active', button.dataset.sizeTab === stagedSizeState.mode);
+      });
+      document.querySelectorAll('[data-size-base]').forEach(button => {
+        button.classList.toggle('active', button.dataset.sizeBase === stagedSizeState.base);
+      });
+      document.querySelectorAll('[data-size-ratio]').forEach(button => {
+        button.classList.toggle('active', button.dataset.sizeRatio === stagedSizeState.ratio);
+      });
+    }
+
+    function updateSizeResult() {
+      const value = getSizeValue(stagedSizeState);
+      document.getElementById('sizeResultValue').textContent = value;
+      document.getElementById('sizeResultMeta').textContent = getSizeMeta(stagedSizeState);
+    }
+
+    function renderSizeDialog(syncCustomInputs = false) {
+      document.getElementById('sizeCurrentValue').textContent = formatSizeValue(getSizeValue(sizeState));
+      document.getElementById('sizeAutoPanel').classList.toggle('hidden', stagedSizeState.mode !== 'auto');
+      document.getElementById('sizeRatioPanel').classList.toggle('hidden', stagedSizeState.mode !== 'ratio');
+      document.getElementById('sizeCustomPanel').classList.toggle('hidden', stagedSizeState.mode !== 'custom');
+      if (syncCustomInputs) {
+        document.getElementById('customWidthInput').value = stagedSizeState.customWidth;
+        document.getElementById('customHeightInput').value = stagedSizeState.customHeight;
+      }
+      updateActiveSizeControls();
+      updateSizeResult();
+    }
+
+    function renderSizeButton() {
+      const value = getSizeValue(sizeState);
+      const button = document.getElementById('sizeSelect');
+      button.value = value;
+      document.getElementById('sizeSelectLabel').textContent = formatSizeValue(value);
+      document.getElementById('sizeSelectMeta').textContent = getSizeMeta(sizeState);
+    }
+
+    function openSizeDialog() {
+      stagedSizeState = cloneSizeState(sizeState);
+      renderSizeDialog(true);
+      document.getElementById('sizeDialog').classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeSizeDialog() {
+      document.getElementById('sizeDialog').classList.add('hidden');
+      if (
+        document.getElementById('lightbox').classList.contains('hidden') &&
+        document.getElementById('settingsDrawer').classList.contains('hidden')
+      ) {
+        document.body.style.overflow = '';
+      }
+    }
+
+    function selectSizeMode(mode) {
+      stagedSizeState.mode = mode;
+      renderSizeDialog(mode === 'custom');
+      if (mode === 'custom') {
+        setTimeout(() => document.getElementById('customWidthInput').focus(), 0);
+      }
+    }
+
+    function selectSizeBase(base) {
+      stagedSizeState.mode = 'ratio';
+      stagedSizeState.base = base;
+      renderSizeDialog();
+    }
+
+    function selectSizeRatio(ratio) {
+      stagedSizeState.mode = 'ratio';
+      stagedSizeState.ratio = ratio;
+      renderSizeDialog();
+    }
+
+    function handleCustomSizeInput(field, value) {
+      const cleanValue = String(value).replace(/[^\d]/g, '');
+      if (field === 'width') {
+        stagedSizeState.customWidth = cleanValue;
+        if (value !== cleanValue) document.getElementById('customWidthInput').value = cleanValue;
+      } else {
+        stagedSizeState.customHeight = cleanValue;
+        if (value !== cleanValue) document.getElementById('customHeightInput').value = cleanValue;
+      }
+      stagedSizeState.mode = 'custom';
+      updateActiveSizeControls();
+      updateSizeResult();
+    }
+
+    function applySizeDialog() {
+      if (stagedSizeState.mode === 'custom') {
+        const resolution = getCustomResolution(stagedSizeState);
+        stagedSizeState.customWidth = String(resolution.width);
+        stagedSizeState.customHeight = String(resolution.height);
+      }
+      sizeState = cloneSizeState(stagedSizeState);
+      renderSizeButton();
+      closeSizeDialog();
+    }
+
     function setLoading(loading) {
       const btn = document.getElementById('generateBtn');
       const preview = document.getElementById('previewSection');
       const previewLoading = document.getElementById('previewLoading');
       const previewImg = document.getElementById('previewImage');
       const previewLoadingText = document.getElementById('previewLoadingText');
-      const inputs = ['promptInput', 'sizeSelect', 'modelSelect'];
+      const inputs = ['promptInput', 'modelSelect'];
       const spinnerHTML = '<span class="spinner"></span> Generating...';
 
       btn.disabled = loading;
       btn.innerHTML = loading ? spinnerHTML : '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Generate';
       inputs.forEach(id => { document.getElementById(id).disabled = loading; });
+      document.getElementById('sizeSelect').disabled = loading;
 
       if (loading) {
         preview.classList.remove('hidden');
@@ -566,6 +936,8 @@
       if (e.key === 'Escape') {
         if (!document.getElementById('lightbox').classList.contains('hidden')) {
           closeLightbox();
+        } else if (!document.getElementById('sizeDialog').classList.contains('hidden')) {
+          closeSizeDialog();
         } else if (!document.getElementById('settingsDrawer').classList.contains('hidden')) {
           toggleSettings();
         }
