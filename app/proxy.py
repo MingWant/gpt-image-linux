@@ -1,5 +1,6 @@
 import aiohttp
 import base64
+import json
 from typing import Optional
 
 from .models import GenerateRequest
@@ -35,34 +36,34 @@ async def call_images_api(
             status = resp.status
             response_text = await resp.text()
 
-            if status >= 500:
-                try:
-                    error_body = await resp.json()
-                    error_msg = error_body.get("error", {}).get(
-                        "message", response_text
-                    )
-                except Exception:
-                    error_msg = response_text
-                raise Exception(f"Upstream server error ({status}): {error_msg}")
+            content_type = resp.headers.get("Content-Type", "")
+            is_json_response = "application/json" in content_type
 
             if status >= 400:
-                try:
-                    error_body = await resp.json()
-                    error_msg = error_body.get("error", {}).get(
-                        "message", response_text
-                    )
-                except Exception:
-                    error_msg = response_text
+                if is_json_response:
+                    try:
+                        error_body = await resp.json()
+                        error_msg = error_body.get("error", {}).get(
+                            "message", response_text
+                        )
+                    except Exception:
+                        error_msg = response_text
+                else:
+                    error_msg = f"HTTP {status}: {response_text[:200]}"
                 raise Exception(f"Upstream API error ({status}): {error_msg}")
 
-            try:
-                result = await resp.json()
-            except Exception as e:
-                raise Exception(f"Failed to parse upstream response: {e}\n{response_text}")
+            if is_json_response:
+                try:
+                    result = json.loads(response_text)
+                except json.JSONDecodeError as e:
+                    raise Exception(f"Upstream returned non-JSON ({status}): {response_text[:200]}")
+            else:
+                raise Exception(f"Upstream returned non-JSON content-type ({status}): {response_text[:200]}")
 
             data = result.get("data", [])
             if not data:
-                raise Exception(f"No image data in upstream response: {response_text}")
+                text_preview = response_text[:200] if isinstance(response_text, str) else str(response_text)[:200]
+                raise Exception(f"No image data in upstream response: {text_preview}")
 
             image_data = data[0]
             image_bytes: Optional[bytes] = None
