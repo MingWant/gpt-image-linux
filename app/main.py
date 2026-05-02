@@ -94,6 +94,11 @@ def trim_generate_jobs():
         jobs.pop(job_id, None)
 
 
+@app.get("/favicon.ico")
+async def favicon():
+    return FileResponse("static/favicon.ico")
+
+
 @app.get("/")
 async def index():
     return FileResponse("static/index.html")
