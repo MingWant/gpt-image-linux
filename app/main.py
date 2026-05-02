@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from contextlib import asynccontextmanager
@@ -256,11 +256,25 @@ async def get_generate_job(job_id: str):
 
 
 @app.get("/api/gallery", response_model=GalleryResponse)
-async def get_gallery():
+async def get_gallery(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=9, ge=1, le=100),
+):
     entries = storage.get_gallery()
+    total = len(entries)
+    total_pages = max((total + page_size - 1) // page_size, 1)
+    page = min(page, total_pages)
+    start = (page - 1) * page_size
+    end = start + page_size
+
     return GalleryResponse(
-        total=len(entries),
-        images=entries,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        has_prev=page > 1,
+        has_next=page < total_pages,
+        images=entries[start:end],
     )
 
 

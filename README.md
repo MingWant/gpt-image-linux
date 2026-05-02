@@ -99,7 +99,7 @@ For `/v1/responses`, the image model selected in the UI is passed to the `image_
 | `GET` | `/api/settings` | Get current settings (key masked) |
 | `POST` | `/api/generate` | Start an image generation job |
 | `GET` | `/api/generate/{job_id}` | Get generation job status/result |
-| `GET` | `/api/gallery` | List all gallery images |
+| `GET` | `/api/gallery?page=1&page_size=9` | List gallery images with pagination |
 | `GET` | `/api/image/{filename}` | Serve image file |
 | `GET` | `/api/download/{filename}` | Download image as attachment |
 | `DELETE` | `/api/gallery/{id}` | Delete gallery entry |

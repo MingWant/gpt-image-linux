@@ -373,6 +373,25 @@
         <!-- Cards injected here -->
       </div>
 
+      <div id="galleryPagination" class="hidden mt-5 flex items-center justify-center gap-3">
+        <button id="galleryPrevBtn" type="button" onclick="changeGalleryPage(-1)"
+          class="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/70 px-3 py-2 text-xs font-medium text-zinc-400 transition-colors hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-zinc-800 disabled:hover:bg-zinc-900/70 disabled:hover:text-zinc-400">
+          <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+          </svg>
+          Prev
+        </button>
+        <span id="galleryPageInfo"
+          class="min-w-[88px] rounded-lg border border-zinc-800 bg-zinc-950/70 px-3 py-2 text-center text-xs font-medium text-zinc-500">Page 1 / 1</span>
+        <button id="galleryNextBtn" type="button" onclick="changeGalleryPage(1)"
+          class="inline-flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900/70 px-3 py-2 text-xs font-medium text-zinc-400 transition-colors hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-zinc-800 disabled:hover:bg-zinc-900/70 disabled:hover:text-zinc-400">
+          Next
+          <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+          </svg>
+        </button>
+      </div>
+
       <div id="galleryEmpty" class="hidden">
         <div class="flex flex-col items-center py-16 px-8">
           <div class="relative mb-6">
@@ -553,6 +572,9 @@
     let lastRequestBody = null;
     let generationStartedAt = null;
     let galleryById = new Map();
+    const GALLERY_PAGE_SIZE = 9;
+    let galleryPage = 1;
+    let galleryTotalPages = 1;
     let activeLightboxImage = null;
     const SIZE_LIMITS = {
       step: 16,
@@ -1088,7 +1110,7 @@
       previewImg.style.opacity = '1';
       previewLoading.classList.add('hidden');
 
-      await loadGallery();
+      await loadGallery(1);
     }
 
     async function generateImage() {
@@ -1148,24 +1170,35 @@
       document.body.removeChild(a);
     }
 
-    async function loadGallery() {
+    async function loadGallery(page = galleryPage) {
       try {
-        const res = await fetch('/api/gallery', { credentials: 'same-origin' });
+        const params = new URLSearchParams({
+          page: String(page),
+          page_size: String(GALLERY_PAGE_SIZE),
+        });
+        const res = await fetch('/api/gallery?' + params.toString(), { credentials: 'same-origin' });
         const data = await res.json();
         const grid = document.getElementById('galleryGrid');
         const empty = document.getElementById('galleryEmpty');
         const count = document.getElementById('galleryCount');
+        const pagination = document.getElementById('galleryPagination');
+
+        galleryPage = data.page || 1;
+        galleryTotalPages = data.total_pages || 1;
 
         count.textContent = data.total > 0 ? `${data.total} image${data.total !== 1 ? 's' : ''}` : '';
+        renderGalleryPagination(data);
 
         if (!data.images || data.images.length === 0) {
           galleryById = new Map();
           grid.innerHTML = '';
           empty.classList.remove('hidden');
+          pagination.classList.add('hidden');
           return;
         }
 
         empty.classList.add('hidden');
+        pagination.classList.toggle('hidden', galleryTotalPages <= 1);
         galleryById = new Map(data.images.map(img => [img.id, normalizeGalleryImage(img)]));
         grid.innerHTML = data.images.map(img => {
           const date = new Date(img.created_at);
@@ -1221,6 +1254,26 @@
       }
     }
 
+    function renderGalleryPagination(data = {}) {
+      const pagination = document.getElementById('galleryPagination');
+      const prevBtn = document.getElementById('galleryPrevBtn');
+      const nextBtn = document.getElementById('galleryNextBtn');
+      const pageInfo = document.getElementById('galleryPageInfo');
+      const totalPages = data.total_pages || galleryTotalPages || 1;
+      const page = data.page || galleryPage || 1;
+
+      pagination.classList.toggle('hidden', totalPages <= 1);
+      prevBtn.disabled = !(data.has_prev ?? page > 1);
+      nextBtn.disabled = !(data.has_next ?? page < totalPages);
+      pageInfo.textContent = `Page ${page} / ${totalPages}`;
+    }
+
+    function changeGalleryPage(delta) {
+      const nextPage = Math.min(Math.max(galleryPage + delta, 1), galleryTotalPages);
+      if (nextPage === galleryPage) return;
+      loadGallery(nextPage);
+    }
+
     async function deleteImage(id) {
       if (!confirm('Delete this image from gallery?')) return;
       try {
@@ -1229,7 +1282,7 @@
           credentials: 'same-origin',
         });
         if (!res.ok) throw new Error('Delete failed');
-        await loadGallery();
+        await loadGallery(galleryPage);
         showToast('Image deleted', 'success');
       } catch (e) {
         showToast('Failed to delete: ' + e.message, 'error');
