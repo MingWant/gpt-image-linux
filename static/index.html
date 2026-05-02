@@ -1156,8 +1156,8 @@
       const loadingStyles = window.getComputedStyle(previewLoading);
       const verticalPadding =
         parseFloat(loadingStyles.paddingTop) + parseFloat(loadingStyles.paddingBottom);
-      const bottomBreathingRoom = 72;
-      const minimumHeight = window.matchMedia('(max-width: 520px)').matches ? 900 : 760;
+      const bottomBreathingRoom = 96;
+      const minimumHeight = window.matchMedia('(max-width: 520px)').matches ? 1040 : 900;
       const contentHeight = loadingContent?.scrollHeight || previewLoading.scrollHeight;
       const nextHeight = Math.max(
         minimumHeight,
