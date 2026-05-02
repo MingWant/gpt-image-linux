@@ -101,6 +101,7 @@ Runtime persistent storage is minimal:
 ## Project structure
 
 ```text
+LICENSE
 README.md
 README_ZH.md
 Dockerfile
@@ -277,6 +278,17 @@ Helpful guidelines:
 - do not commit generated images or runtime gallery metadata unless explicitly requested
 - preserve the existing async generation flow and polling model unless the change explicitly requires altering job lifecycle behavior
 
+## License
+
+This project is licensed under `CC BY-NC 4.0` (`Creative Commons Attribution-NonCommercial 4.0 International`).
+
+- You can use, copy, modify, redistribute, and create derivative works.
+- You must provide attribution and keep the license notice.
+- You may not use this project or derivative works for commercial purposes.
+- If you need commercial use, you must obtain prior permission from the copyright holder.
+
+See [LICENSE](./LICENSE) for the repository license text.
+
 ---
 
 # 中文文档
@@ -384,6 +396,7 @@ GPT Image Panel 是一个轻量级 FastAPI Web 界面，用于图像生成和图
 ## 项目结构
 
 ```text
+LICENSE
 README.md
 README_ZH.md
 Dockerfile
@@ -559,3 +572,14 @@ curl http://localhost:9090/health
 - 不要在仓库文件中保存真实 API Key
 - 除非明确要求，否则不要提交生成图片或运行时 Gallery 元数据
 - 除非明确要求改变任务生命周期，否则保留现有异步生成与轮询机制
+
+## 许可证
+
+本项目采用 `CC BY-NC 4.0` 许可证，即 `Creative Commons Attribution-NonCommercial 4.0 International`。
+
+- 允许任何人使用、复制、修改、再分发以及二次创作。
+- 需要保留署名，并附带许可证说明。
+- 不允许将本项目或其衍生作品用于商业用途。
+- 如需商业使用，必须事先获得著作权人的许可。
+
+许可证全文见 [LICENSE](./LICENSE)。
