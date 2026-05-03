@@ -25,7 +25,7 @@ class PresetCreateRequest(BaseModel):
 class SettingsRequest(BaseModel):
     active_preset_id: Optional[str] = None
     preset_name: Optional[str] = None
-    api_url: str = Field(..., description="Base API URL, e.g. https://api.221.qzz.io")
+    api_url: str = Field(..., description="Base API URL, e.g. https://api.example.com")
     api_key: Optional[str] = Field(
         default=None,
         description="API key for authentication. Omit/null to keep the current key.",
