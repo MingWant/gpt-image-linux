@@ -19,6 +19,14 @@ OUTPUT_FORMATS = {
 }
 
 
+UPSTREAM_TIMEOUT = aiohttp.ClientTimeout(
+    total=600,
+    connect=30,
+    sock_connect=30,
+    sock_read=600,
+)
+
+
 def get_output_format_info(output_format: str) -> dict[str, str]:
     return OUTPUT_FORMATS.get(output_format, OUTPUT_FORMATS["png"])
 
@@ -212,7 +220,6 @@ async def call_image_generation_api(
         request_data = build_images_request_data(payload)
         request_count = 1
 
-    timeout = aiohttp.ClientTimeout(total=300)
     format_info = get_output_format_info(payload.output_format)
     entries: list[storage.GalleryEntry] = []
     gallery_metadata = {
@@ -225,7 +232,7 @@ async def call_image_generation_api(
         "api_path": api_path,
     }
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession(timeout=UPSTREAM_TIMEOUT) as session:
         for request_index in range(request_count):
             if progress:
                 progress(
@@ -376,7 +383,6 @@ async def call_image_edit_api(
         "Authorization": f"Bearer {api_key}",
         "User-Agent": "opencode",
     }
-    timeout = aiohttp.ClientTimeout(total=300)
     format_info = get_output_format_info(payload.output_format)
     gallery_metadata = {
         "model": payload.model,
@@ -400,7 +406,7 @@ async def call_image_edit_api(
     for key, value in build_images_edit_form_data(payload).items():
         form.add_field(key, str(value))
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession(timeout=UPSTREAM_TIMEOUT) as session:
         if progress:
             progress("uploading_edit_image", "Uploading source image and edit parameters")
         async with session.post(upstream_url, data=form, headers=headers) as resp:

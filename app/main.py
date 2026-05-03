@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import hmac
 import io
+import logging
 import mimetypes
 import uuid
 import zipfile
@@ -27,6 +28,13 @@ from .models import (
 from . import storage
 from . import proxy
 from . import auth
+
+
+logger = logging.getLogger(__name__)
+
+
+def get_exception_message(error: Exception) -> str:
+    return str(error) or repr(error) or error.__class__.__name__
 
 
 @asynccontextmanager
@@ -284,11 +292,25 @@ async def run_generate_job(
             ),
         )
     except Exception as e:
+        error_message = get_exception_message(e)
+        logger.exception(
+            "Image generation failed: job_id=%s error_type=%s api_url=%s api_path=%s model=%s size=%s quality=%s output_format=%s response_format=%s n=%s",
+            job_id,
+            e.__class__.__name__,
+            api_url,
+            api_path,
+            req.model,
+            req.size,
+            req.quality,
+            req.output_format,
+            req.response_format,
+            req.n,
+        )
         jobs[job_id] = {
             "job_id": job_id,
             "status": "error",
             "stage": "generation_failed",
-            "message": str(e),
+            "message": error_message,
             "operation": "generation",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -359,11 +381,25 @@ async def run_edit_job(
             ),
         )
     except Exception as e:
+        error_message = get_exception_message(e)
+        logger.exception(
+            "Image edit failed: job_id=%s error_type=%s api_url=%s api_path=%s model=%s size=%s quality=%s output_format=%s response_format=%s n=%s",
+            job_id,
+            e.__class__.__name__,
+            api_url,
+            "/v1/images/edits",
+            req.model,
+            req.size,
+            req.quality,
+            req.output_format,
+            req.response_format,
+            req.n,
+        )
         jobs[job_id] = {
             "job_id": job_id,
             "status": "error",
             "stage": "edit_failed",
-            "message": str(e),
+            "message": error_message,
             "operation": "edit",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
