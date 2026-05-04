@@ -1859,6 +1859,7 @@
         response_format: img.response_format || 'Unknown',
         n: img.n,
         api_path: img.api_path || 'Unknown',
+        api_preset_name: img.api_preset_name || 'Unknown',
       };
     }
 
@@ -1897,6 +1898,7 @@
         renderParameter('Output Compression', image.output_compression),
         renderParameter('Quantity', image.n),
         renderParameter('Response Format', image.response_format),
+        renderParameter('Preset', image.api_preset_name),
         renderParameter('API Path', image.api_path),
       ].join('');
     }

@@ -201,6 +201,7 @@ async def call_image_generation_api(
     api_key: str,
     api_path: str,
     payload: GenerateRequest,
+    api_preset_name: str | None = None,
     progress: ProgressCallback | None = None,
 ) -> list[storage.GalleryEntry]:
     api_path = normalize_api_path(api_path)
@@ -233,6 +234,7 @@ async def call_image_generation_api(
         "response_format": payload.response_format,
         "n": payload.n,
         "api_path": api_path,
+        "api_preset_name": api_preset_name,
     }
 
     async with aiohttp.ClientSession(timeout=UPSTREAM_TIMEOUT) as session:
@@ -378,6 +380,7 @@ async def call_image_edit_api(
     image_bytes: bytes,
     image_filename: str,
     image_content_type: str,
+    api_preset_name: str | None = None,
     progress: ProgressCallback | None = None,
 ) -> list[storage.GalleryEntry]:
     api_path = "/v1/images/edits"
@@ -396,6 +399,7 @@ async def call_image_edit_api(
         "response_format": payload.response_format,
         "n": payload.n,
         "api_path": api_path,
+        "api_preset_name": api_preset_name,
     }
 
     if progress:

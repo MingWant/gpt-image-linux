@@ -462,6 +462,7 @@ async def run_generate_job(
     api_url: str,
     api_key: str,
     api_path: str,
+    api_preset_name: str,
     req: GenerateRequest,
 ):
     jobs = app.state.generate_jobs
@@ -480,6 +481,7 @@ async def run_generate_job(
             api_key,
             api_path,
             req,
+            api_preset_name,
             lambda stage, message: set_generate_job_progress(
                 job_id,
                 stage,
@@ -540,6 +542,7 @@ async def run_generate_job(
         "response_format": first_entry.response_format,
         "n": first_entry.n,
         "api_path": first_entry.api_path,
+        "api_preset_name": first_entry.api_preset_name,
     }
     trim_generate_jobs()
 
@@ -548,6 +551,7 @@ async def run_edit_job(
     job_id: str,
     api_url: str,
     api_key: str,
+    api_preset_name: str,
     req: EditRequest,
     image_bytes: bytes,
     image_filename: str,
@@ -571,6 +575,7 @@ async def run_edit_job(
             image_bytes,
             image_filename,
             image_content_type,
+            api_preset_name,
             lambda stage, message: set_generate_job_progress(
                 job_id,
                 stage,
@@ -631,6 +636,7 @@ async def run_edit_job(
         "response_format": first_entry.response_format,
         "n": first_entry.n,
         "api_path": first_entry.api_path,
+        "api_preset_name": first_entry.api_preset_name,
     }
     trim_generate_jobs()
 
@@ -640,6 +646,8 @@ async def generate(req: GenerateRequest):
     api_url: str = getattr(app.state, "api_url", "")
     api_key: str = getattr(app.state, "api_key", "")
     api_path: str = getattr(app.state, "api_path", "/v1/images/generations")
+    active_preset = get_active_preset()
+    api_preset_name = active_preset.get("name") or "Untitled preset"
 
     if not api_url:
         raise HTTPException(status_code=400, detail="API URL not configured. Please set it in Settings.")
@@ -655,7 +663,9 @@ async def generate(req: GenerateRequest):
         "operation": "generation",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    asyncio.create_task(run_generate_job(job_id, api_url, api_key, api_path, req))
+    asyncio.create_task(
+        run_generate_job(job_id, api_url, api_key, api_path, api_preset_name, req)
+    )
 
     return GenerateJobResponse(
         job_id=job_id,
@@ -680,6 +690,8 @@ async def edit_image(
 ):
     api_url: str = getattr(app.state, "api_url", "")
     api_key: str = getattr(app.state, "api_key", "")
+    active_preset = get_active_preset()
+    api_preset_name = active_preset.get("name") or "Untitled preset"
 
     if not api_url:
         raise HTTPException(status_code=400, detail="API URL not configured. Please set it in Settings.")
@@ -725,6 +737,7 @@ async def edit_image(
             job_id,
             api_url,
             api_key,
+            api_preset_name,
             req,
             image_bytes,
             image.filename or "image.png",

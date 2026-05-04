@@ -120,6 +120,7 @@ class GalleryEntry(BaseModel):
     response_format: Optional[str] = None
     n: Optional[int] = None
     api_path: Optional[str] = None
+    api_preset_name: Optional[str] = None
 
 
 class GenerateResponse(BaseModel):
@@ -138,6 +139,7 @@ class GenerateResponse(BaseModel):
     response_format: Optional[str] = None
     n: Optional[int] = None
     api_path: Optional[str] = None
+    api_preset_name: Optional[str] = None
 
 
 class GenerateJobResponse(BaseModel):
@@ -168,6 +170,7 @@ class GenerateJobStatus(BaseModel):
     response_format: Optional[str] = None
     n: Optional[int] = None
     api_path: Optional[str] = None
+    api_preset_name: Optional[str] = None
 
 
 class GalleryResponse(BaseModel):
