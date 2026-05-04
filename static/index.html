@@ -984,8 +984,9 @@
     function refreshParameterControls(loading = false) {
       const responsesMode = isResponsesApiSelected();
       const lockParameters = loading || responsesMode;
-      const parameterIds = ['modelSelect', 'qualitySelect', 'formatSelect', 'quantityInput', 'responseFormatSelect'];
+      const parameterIds = ['qualitySelect', 'formatSelect', 'quantityInput', 'responseFormatSelect'];
 
+      setControlDisabled('modelSelect', loading);
       parameterIds.forEach(id => setControlDisabled(id, lockParameters));
       setControlDisabled('sizeSelect', lockParameters);
 
@@ -1444,7 +1445,10 @@
 
     function getImageRequestBody() {
       if (isResponsesApiSelected()) {
-        return { prompt: document.getElementById('promptInput').value.trim() };
+        return {
+          prompt: document.getElementById('promptInput').value.trim(),
+          model: document.getElementById('modelSelect').value,
+        };
       }
 
       const outputFormat = document.getElementById('formatSelect').value;

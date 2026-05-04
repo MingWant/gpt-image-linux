@@ -131,7 +131,7 @@ def build_images_edit_form_data(payload: EditRequest) -> dict[str, Any]:
 
 
 def build_responses_request_data(payload: GenerateRequest) -> dict[str, Any]:
-    return {"prompt": payload.prompt}
+    return {"prompt": payload.prompt, "model": payload.model}
 
 
 def normalize_api_path(api_path: str) -> str:
