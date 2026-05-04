@@ -12,6 +12,22 @@ from typing import Any
 from .models import GalleryEntry
 from . import config
 
+IMAGE_FILE_EXTENSIONS = {
+    ".avif",
+    ".bmp",
+    ".gif",
+    ".heic",
+    ".heif",
+    ".ico",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".svg",
+    ".tif",
+    ".tiff",
+    ".webp",
+}
+
 
 def _default_settings() -> dict:
     return {
@@ -204,8 +220,14 @@ def get_image_path(filename: str) -> Path:
 
 
 def delete_image(filename: str) -> bool:
-    path = Path(config.IMAGES_DIR) / filename
-    if path.exists():
+    images_dir = Path(config.IMAGES_DIR).resolve()
+    path = (images_dir / filename).resolve()
+    try:
+        path.relative_to(images_dir)
+    except ValueError:
+        return False
+
+    if path.is_file():
         path.unlink()
         return True
     return False
@@ -333,3 +355,29 @@ def delete_from_gallery(image_id: str) -> bool:
         return False
     _save_gallery(entries)
     return True
+
+
+def delete_all_gallery_images() -> int:
+    entries = _load_gallery()
+    deleted_count = 0
+    seen_filenames: set[str] = set()
+
+    for entry in entries:
+        filename = entry.get("filename")
+        if not filename or filename in seen_filenames:
+            continue
+
+        seen_filenames.add(filename)
+        if delete_image(filename):
+            deleted_count += 1
+
+    images_dir = Path(config.IMAGES_DIR)
+    if images_dir.exists():
+        for path in images_dir.iterdir():
+            if path.name in seen_filenames or path.suffix.lower() not in IMAGE_FILE_EXTENSIONS:
+                continue
+            if path.is_file() and delete_image(path.name):
+                deleted_count += 1
+
+    _save_gallery([])
+    return deleted_count

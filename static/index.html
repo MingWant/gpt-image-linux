@@ -471,6 +471,14 @@
             </svg>
             Download All
           </button>
+          <button id="deleteAllBtn" onclick="deleteAllImages()"
+            class="px-3 py-2 rounded-lg bg-red-950/70 text-red-300 text-xs font-medium hover:bg-red-900/70 transition-colors flex items-center gap-1.5"
+            title="Delete all images from the server">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+            </svg>
+            Delete All
+          </button>
         </div>
       </div>
 
@@ -733,6 +741,18 @@
       await checkAccess();
     })();
 
+    function showAccessGate(message) {
+      const error = document.getElementById('accessKeyError');
+      if (message) {
+        error.textContent = message;
+        error.classList.remove('hidden');
+      } else {
+        error.classList.add('hidden');
+      }
+      document.getElementById('accessGate').classList.remove('hidden');
+      document.getElementById('accessKeyInput').focus();
+    }
+
     async function checkAccess() {
       try {
         const data = await apiFetch('/api/access/status', {}, 'checking access');
@@ -744,12 +764,12 @@
           return;
         }
       } catch (e) {
-        document.getElementById('accessKeyError').textContent = e.message || 'Access check failed';
-        document.getElementById('accessKeyError').classList.remove('hidden');
+        if (!document.getElementById('accessGate').classList.contains('hidden')) return;
+        showAccessGate(e.message || 'Access check failed');
+        return;
       }
 
-      document.getElementById('accessGate').classList.remove('hidden');
-      document.getElementById('accessKeyInput').focus();
+      showAccessGate();
     }
 
     async function unlockAccess(event) {
@@ -1416,6 +1436,10 @@
       }
 
       if (!res.ok) {
+        if (res.status === 401) {
+          showAccessGate();
+          throw new Error('Session expired. Please enter the access key.');
+        }
         const message = data?.detail || data?.error || data?.message || bodyText || `${action} failed`;
         const status = res.status ? ` (${res.status})` : '';
         throw new Error(`${message}${status}`);
@@ -1701,6 +1725,38 @@
         btn.disabled = false;
         btn.innerHTML = original;
       }, 3000);
+    }
+
+    async function deleteAllImages() {
+      const confirmed = confirm(
+        'Please back up your images before continuing. This will permanently delete every gallery image stored on the server. Continue?'
+      );
+      if (!confirmed) return;
+
+      const btn = document.getElementById('deleteAllBtn');
+      const original = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;"></span> Deleting...';
+
+      try {
+        await apiFetch('/api/gallery', {
+          method: 'DELETE',
+        }, 'deleting all images');
+
+        currentImageUrl = null;
+        currentFilename = null;
+        activeLightboxImage = null;
+        galleryById = new Map();
+        closeLightbox();
+        document.getElementById('previewSection').classList.add('hidden');
+        await loadGallery(1);
+        showToast('All server images deleted', 'success');
+      } catch (e) {
+        showToast('Failed to delete all: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = original;
+      }
     }
 
     async function loadGallery(page = galleryPage, options = {}) {

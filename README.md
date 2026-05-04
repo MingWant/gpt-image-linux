@@ -271,6 +271,7 @@ The panel supports these upstream paths:
 | `GET` | `/api/download/{filename}` | Download image as attachment |
 | `DELETE` | `/api/gallery/{id}` | Delete gallery entry |
 | `GET` | `/api/download-all` | Download all gallery images as a ZIP file |
+| `DELETE` | `/api/gallery` | Delete all gallery entries and server image files |
 
 ## Runtime behavior notes
 
@@ -279,6 +280,7 @@ The panel supports these upstream paths:
 - API keys are masked in the UI but stored as plain text in `data/settings.json`.
 - Finished generation jobs are trimmed when the job store exceeds `MAX_GENERATE_JOBS`.
 - `DELETE /api/gallery/{image_id}` removes metadata but does not delete the image file from disk.
+- `DELETE /api/gallery` removes all gallery metadata and deletes image files from `IMAGES_DIR`.
 - Streaming image responses use an opened file handle; avoid interrupting cleanup logic if you modify serving behavior.
 
 ## Testing
@@ -588,6 +590,7 @@ curl http://localhost:9090/health
 | `GET` | `/api/download/{filename}` | 下载图片 |
 | `DELETE` | `/api/gallery/{id}` | 删除 Gallery 条目 |
 | `GET` | `/api/download-all` | 下载 Gallery 所有图片为 ZIP 文件 |
+| `DELETE` | `/api/gallery` | 删除所有 Gallery 条目和服务器图片文件 |
 
 ## 运行时注意事项
 
@@ -596,6 +599,7 @@ curl http://localhost:9090/health
 - API Key 在界面中掩码展示，但会以明文保存到 `data/settings.json`。
 - 当任务数量超过 `MAX_GENERATE_JOBS` 时，已结束任务会被裁剪。
 - `DELETE /api/gallery/{image_id}` 仅删除元数据，不会删除磁盘上的图片文件。
+- `DELETE /api/gallery` 会删除所有 Gallery 元数据，并删除 `IMAGES_DIR` 中的图片文件。
 - 图片流式返回依赖已打开的文件句柄，修改相关逻辑时需注意资源释放。
 
 ## 测试

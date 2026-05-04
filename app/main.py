@@ -852,6 +852,16 @@ async def download_all_images():
     )
 
 
+@app.delete("/api/gallery", response_model=MessageResponse)
+async def delete_all_gallery_images():
+    total = len(storage.get_gallery())
+    deleted_count = storage.delete_all_gallery_images()
+    return MessageResponse(
+        status="ok",
+        message=f"Deleted {deleted_count} image file(s) and {total} gallery entries",
+    )
+
+
 @app.delete("/api/gallery/{image_id}", response_model=MessageResponse)
 async def delete_gallery_item(image_id: str):
     entry_found = False
