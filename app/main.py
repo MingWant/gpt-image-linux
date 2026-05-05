@@ -7,6 +7,7 @@ import hmac
 import io
 import logging
 import mimetypes
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -465,7 +466,6 @@ async def run_generate_job(
     api_preset_name: str,
     req: GenerateRequest,
 ):
-    import time
     started_at = time.monotonic()
     jobs = app.state.generate_jobs
     jobs[job_id] = {
@@ -518,7 +518,6 @@ async def run_generate_job(
         trim_generate_jobs()
         return
 
-    duration = f"{time.monotonic() - started_at:.2f}s"
     set_generate_job_progress(
         job_id,
         "finalizing_preview",
@@ -526,6 +525,7 @@ async def run_generate_job(
         "generation",
     )
     first_entry = entries[0]
+    storage.update_gallery_entry(first_entry.id, {"duration": duration})
     jobs[job_id] = {
         "job_id": job_id,
         "status": "success",
@@ -562,7 +562,6 @@ async def run_edit_job(
     image_filename: str,
     image_content_type: str,
 ):
-    import time
     started_at = time.monotonic()
     jobs = app.state.generate_jobs
     jobs[job_id] = {
@@ -624,6 +623,7 @@ async def run_edit_job(
         "edit",
     )
     first_entry = entries[0]
+    storage.update_gallery_entry(first_entry.id, {"duration": duration})
     jobs[job_id] = {
         "job_id": job_id,
         "status": "success",

@@ -186,7 +186,6 @@ async def call_image_generation_api(
     payload: GenerateRequest,
     api_preset_name: str | None = None,
     progress: ProgressCallback | None = None,
-    duration: str | None = None,
 ) -> list[storage.GalleryEntry]:
     api_path = normalize_api_path(api_path)
     upstream_url = f"{api_url.rstrip('/')}{api_path}"
@@ -220,8 +219,6 @@ async def call_image_generation_api(
         "api_path": api_path,
         "api_preset_name": api_preset_name,
     }
-    if duration:
-        gallery_metadata["duration"] = duration
 
     async with aiohttp.ClientSession(timeout=UPSTREAM_TIMEOUT) as session:
         for request_index in range(request_count):
@@ -368,7 +365,6 @@ async def call_image_edit_api(
     image_content_type: str,
     api_preset_name: str | None = None,
     progress: ProgressCallback | None = None,
-    duration: str | None = None,
 ) -> list[storage.GalleryEntry]:
     api_path = "/v1/images/edits"
     upstream_url = f"{api_url.rstrip('/')}{api_path}"
@@ -388,8 +384,6 @@ async def call_image_edit_api(
         "api_path": api_path,
         "api_preset_name": api_preset_name,
     }
-    if duration:
-        gallery_metadata["duration"] = duration
 
     if progress:
         progress("building_edit_form", "Building multipart edit request")
