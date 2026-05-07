@@ -16,11 +16,13 @@ let jobHistoryState = {
   loading: false,
   deleting: false,
   pollingStarted: false,
+  eventsBound: false,
 };
 
 export function startJobHistoryPolling() {
   if (jobHistoryState.pollingStarted) return;
   jobHistoryState.pollingStarted = true;
+  bindJobHistoryEvents();
   refreshJobHistory({ silent: true });
   window.setInterval(() => refreshJobHistory({ silent: true }), POLL_INTERVAL_MS);
 }
@@ -39,7 +41,9 @@ export async function toggleJobHistory() {
 
 export async function refreshJobHistory(options = {}) {
   jobHistoryState.loading = true;
-  renderJobHistory();
+  if (!options.silent || !jobHistoryState.jobs.length) {
+    renderJobHistory();
+  }
 
   try {
     const jobs = await apiFetch('/api/generate/jobs', {}, 'loading active jobs');
@@ -64,7 +68,7 @@ export function toggleGenerateJobSelection(jobId, selected) {
   } else {
     jobHistoryState.selectedJobIds.delete(jobId);
   }
-  renderJobHistoryActions();
+  syncJobHistorySelectionUI();
 }
 
 export async function deleteSelectedGenerateJobs() {
@@ -149,13 +153,11 @@ function renderJobHistory() {
 
   empty.classList.add('hidden');
   list.innerHTML = jobs.map(renderJobHistoryItem).join('');
-  renderJobHistoryActions();
+  syncJobHistorySelectionUI();
 }
 
 function renderJobHistoryItem(job) {
   const jobId = job.job_id || '';
-  const checked = jobHistoryState.selectedJobIds.has(jobId) ? 'checked' : '';
-  const disabled = jobHistoryState.deleting ? 'disabled' : '';
   const operation = job.operation === 'edit' ? 'Edit' : 'Generate';
   const statusClass = job.status === 'queued'
     ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
@@ -170,10 +172,10 @@ function renderJobHistoryItem(job) {
   ].filter(Boolean).join(' · ');
 
   return `
-    <label class="block rounded-lg border border-zinc-800 bg-zinc-950/45 p-3 transition-colors hover:border-zinc-700 hover:bg-zinc-900/80">
+    <div class="rounded-lg border border-zinc-800 bg-zinc-950/45 p-3 transition-colors hover:border-zinc-700 hover:bg-zinc-900/80">
       <div class="flex items-start gap-3">
-        <input type="checkbox" class="mt-1 h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-emerald-500/30"
-          onchange="toggleGenerateJobSelection(${JSON.stringify(jobId)}, this.checked)" ${checked} ${disabled}>
+        <input type="checkbox" data-job-id="${escapeAttribute(jobId)}"
+          class="job-history-checkbox mt-1 h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-emerald-500 focus:ring-emerald-500/30">
         <div class="min-w-0 flex-1">
           <div class="flex items-center justify-between gap-3">
             <span class="text-xs font-semibold uppercase tracking-wider text-zinc-500">${operation}</span>
@@ -186,8 +188,21 @@ function renderJobHistoryItem(job) {
           <p class="mt-1 truncate text-xs font-mono text-zinc-600">${escapeHtml(meta || jobId)}</p>
         </div>
       </div>
-    </label>
+    </div>
   `;
+}
+
+function syncJobHistorySelectionUI() {
+  const list = document.getElementById('jobHistoryList');
+  if (list) {
+    list.querySelectorAll('.job-history-checkbox').forEach(input => {
+      const jobId = input.dataset.jobId || '';
+      input.checked = jobHistoryState.selectedJobIds.has(jobId);
+      input.disabled = jobHistoryState.deleting;
+    });
+  }
+
+  renderJobHistoryActions();
 }
 
 function renderJobHistoryActions() {
@@ -201,6 +216,21 @@ function renderJobHistoryActions() {
   deleteBtn.innerHTML = jobHistoryState.deleting
     ? '<span class="spinner"></span> Cancelling...'
     : '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg> Delete Selected';
+}
+
+function bindJobHistoryEvents() {
+  if (jobHistoryState.eventsBound) return;
+
+  const list = document.getElementById('jobHistoryList');
+  if (!list) return;
+
+  list.addEventListener('change', event => {
+    const input = event.target.closest('.job-history-checkbox');
+    if (!input) return;
+    toggleGenerateJobSelection(input.dataset.jobId || '', input.checked);
+  });
+
+  jobHistoryState.eventsBound = true;
 }
 
 function formatCreatedAt(createdAt) {
