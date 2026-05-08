@@ -26,6 +26,10 @@ export function isNetworkFetchError(error) {
   return error instanceof TypeError || /Failed to fetch|Network error/i.test(error?.message || '');
 }
 
+export function handleUnauthorizedEventSource() {
+  unauthorizedHandler?.();
+}
+
 async function readApiResponse(res, action = 'request') {
   const contentType = res.headers.get('content-type') || '';
   const bodyText = await res.text();

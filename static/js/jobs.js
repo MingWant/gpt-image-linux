@@ -1,4 +1,4 @@
-import { apiFetch, isNetworkFetchError } from './api.js';
+import { apiFetch, handleUnauthorizedEventSource, isNetworkFetchError } from './api.js';
 import { loadGallery, normalizeGalleryImage, setActiveLightboxImage } from './gallery.js';
 import { isResponsesApiSelected } from './settings.js';
 import {
@@ -70,6 +70,7 @@ let selectedGalleryImageId = null;
 let generationStartedAt = null;
 let activeGenerateJobId = null;
 let latestJobId = null;
+let activeGenerateJobSource = null;
 const cancelledGenerateJobIds = new Set();
 
 export function markGenerateJobCancelled(jobId) {
@@ -165,7 +166,7 @@ export async function generateImage() {
     const jobId = job.job_id || null;
     activeGenerateJobId = jobId;
     latestJobId = jobId;
-    pollAndShow(jobId, 'generate', prompt);
+    streamAndShow(jobId, 'generate', prompt);
   } catch (e) {
     handleJobError(e, 'Failed to generate image');
   }
@@ -211,7 +212,7 @@ export async function editImage() {
     const jobId = job.job_id || null;
     activeGenerateJobId = jobId;
     latestJobId = jobId;
-    pollAndShow(jobId, 'edit', prompt);
+    streamAndShow(jobId, 'edit', prompt);
   } catch (e) {
     handleJobError(e, 'Failed to edit image');
   }
@@ -239,6 +240,7 @@ export function downloadCurrent() {
 export function clearCurrentImage() {
   currentImageUrl = null;
   currentFilename = null;
+  closeActiveGenerateJobSource();
   setActiveLightboxImage(null);
   document.getElementById('previewSection').classList.add('hidden');
 }
@@ -292,9 +294,9 @@ function showPreviewLoading(mode, prompt) {
   previewImg.style.opacity = '0';
 }
 
-async function pollAndShow(jobId, mode, prompt) {
+async function streamAndShow(jobId, mode, prompt) {
   try {
-    const data = await pollGenerateJob(jobId, mode);
+    const data = await streamGenerateJob(jobId, mode);
     if (latestJobId === jobId) {
       await showGeneratedImage(data);
     } else {
@@ -305,13 +307,100 @@ async function pollAndShow(jobId, mode, prompt) {
       updatePreviewTime('Elapsed');
       document.getElementById('previewImageWrapper').classList.remove('preview-loading-active');
       document.getElementById('previewLoading').classList.add('hidden');
+      handleJobError(e, mode === 'edit' ? 'Failed to edit image' : 'Failed to generate image');
     }
-    handleJobError(e, mode === 'edit' ? 'Failed to edit image' : 'Failed to generate image');
   } finally {
     if (activeGenerateJobId === jobId) {
       activeGenerateJobId = null;
     }
   }
+}
+
+function closeActiveGenerateJobSource() {
+  if (!activeGenerateJobSource) return;
+  activeGenerateJobSource.onmessage = null;
+  activeGenerateJobSource.onerror = null;
+  activeGenerateJobSource.close();
+  activeGenerateJobSource = null;
+}
+
+function streamGenerateJob(jobId, mode = 'generate') {
+  const failedText = mode === 'edit' ? 'Image edit failed' : 'Image generation failed';
+  const timeoutMs = 10 * 60 * 1000;
+  const startedAt = Date.now();
+  let fallbackStarted = false;
+
+  return new Promise((resolve, reject) => {
+    if (!jobId) {
+      reject(new Error('Generation job not found'));
+      return;
+    }
+
+    const source = new EventSource(`/api/generate/${encodeURIComponent(jobId)}/events`);
+    activeGenerateJobSource = source;
+    let settled = false;
+
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      if (activeGenerateJobSource === source) {
+        activeGenerateJobSource = null;
+      }
+      source.close();
+      callback(value);
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      finish(reject, new Error('Image generation is still running. Check the gallery in a bit, or try again.'));
+    }, timeoutMs);
+
+    source.addEventListener('job', event => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (cancelledGenerateJobIds.has(jobId)) {
+        cancelledGenerateJobIds.delete(jobId);
+        window.clearTimeout(timeoutId);
+        finish(reject, new Error('Generation job cancelled'));
+        return;
+      }
+
+      if (data.status === 'success') {
+        window.clearTimeout(timeoutId);
+        finish(resolve, data);
+        return;
+      }
+
+      if (data.status === 'error') {
+        window.clearTimeout(timeoutId);
+        finish(reject, new Error(data.message || data.error || failedText));
+        return;
+      }
+
+      if (latestJobId === jobId) {
+        updatePreviewStage(data.stage || data.status, data.operation || mode, data.message);
+      }
+    });
+
+    source.onerror = () => {
+      if (settled || Date.now() - startedAt > timeoutMs || fallbackStarted) return;
+      fallbackStarted = true;
+      window.clearTimeout(timeoutId);
+      if (latestJobId === jobId) {
+        document.getElementById('previewLoadingText').textContent = 'Reconnecting...';
+      }
+      if (source.readyState === EventSource.CLOSED) {
+        handleUnauthorizedEventSource();
+      }
+      pollGenerateJob(jobId, mode)
+        .then(data => finish(resolve, data))
+        .catch(error => finish(reject, error));
+    };
+  });
 }
 
 async function pollGenerateJob(jobId, mode = 'generate') {

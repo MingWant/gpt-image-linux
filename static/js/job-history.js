@@ -1,4 +1,4 @@
-import { apiFetch } from './api.js';
+import { apiFetch, handleUnauthorizedEventSource } from './api.js';
 import { markGenerateJobCancelled } from './jobs.js';
 import {
   escapeAttribute,
@@ -8,7 +8,7 @@ import {
 } from './ui.js';
 
 const ACTIVE_JOB_STATUSES = new Set(['queued', 'running']);
-const POLL_INTERVAL_MS = 3000;
+const SSE_RECONNECT_MS = 3000;
 
 let jobHistoryState = {
   jobs: [],
@@ -17,6 +17,8 @@ let jobHistoryState = {
   loading: false,
   deleting: false,
   pollingStarted: false,
+  eventSource: null,
+  reconnectTimer: null,
   eventsBound: false,
 };
 
@@ -25,7 +27,7 @@ export function startJobHistoryPolling() {
   jobHistoryState.pollingStarted = true;
   bindJobHistoryEvents();
   refreshJobHistory({ silent: true });
-  window.setInterval(() => refreshJobHistory({ silent: true }), POLL_INTERVAL_MS);
+  openJobHistoryStream();
 }
 
 export async function toggleJobHistory() {
@@ -48,23 +50,79 @@ export async function refreshJobHistory(options = {}) {
 
   try {
     const jobs = await apiFetch('/api/generate/jobs', {}, 'loading active jobs');
-    jobHistoryState.jobs = Array.isArray(jobs)
-      ? jobs.filter(job => ACTIVE_JOB_STATUSES.has(job.status))
-      : [];
-    if (jobHistoryState.selectAllActive && jobHistoryState.jobs.length) {
-      jobHistoryState.selectedJobIds = new Set(jobHistoryState.jobs.map(job => job.job_id));
-    } else {
-      pruneSelectedJobs();
-    }
-    updateJobHistoryBadge();
+    applyJobHistoryJobs(jobs);
   } catch (error) {
     if (!options.silent) {
       showToast('Failed to load jobs: ' + error.message, 'error');
     }
   } finally {
     jobHistoryState.loading = false;
-    renderJobHistory();
+    if (!options.silent || !jobHistoryState.eventSource) {
+      renderJobHistory();
+    }
   }
+}
+
+function openJobHistoryStream() {
+  closeJobHistoryStream();
+
+  const source = new EventSource('/api/generate/jobs/events');
+  jobHistoryState.eventSource = source;
+
+  source.addEventListener('jobs', event => {
+    let jobs;
+    try {
+      jobs = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    applyJobHistoryJobs(jobs);
+  });
+
+  source.onerror = () => {
+    if (source.readyState === EventSource.CLOSED) {
+      handleUnauthorizedEventSource();
+    }
+    scheduleJobHistoryReconnect();
+  };
+}
+
+function closeJobHistoryStream() {
+  if (jobHistoryState.reconnectTimer) {
+    window.clearTimeout(jobHistoryState.reconnectTimer);
+    jobHistoryState.reconnectTimer = null;
+  }
+  if (!jobHistoryState.eventSource) return;
+  jobHistoryState.eventSource.onerror = null;
+  jobHistoryState.eventSource.close();
+  jobHistoryState.eventSource = null;
+}
+
+function scheduleJobHistoryReconnect() {
+  if (jobHistoryState.reconnectTimer) return;
+  if (jobHistoryState.eventSource) {
+    jobHistoryState.eventSource.close();
+    jobHistoryState.eventSource = null;
+  }
+  jobHistoryState.reconnectTimer = window.setTimeout(() => {
+    jobHistoryState.reconnectTimer = null;
+    refreshJobHistory({ silent: true });
+    openJobHistoryStream();
+  }, SSE_RECONNECT_MS);
+}
+
+function applyJobHistoryJobs(jobs) {
+  jobHistoryState.jobs = Array.isArray(jobs)
+    ? jobs.filter(job => ACTIVE_JOB_STATUSES.has(job.status))
+    : [];
+  if (jobHistoryState.selectAllActive && jobHistoryState.jobs.length) {
+    jobHistoryState.selectedJobIds = new Set(jobHistoryState.jobs.map(job => job.job_id));
+  } else {
+    pruneSelectedJobs();
+  }
+  updateJobHistoryBadge();
+  jobHistoryState.loading = false;
+  renderJobHistory();
 }
 
 export function toggleGenerateJobSelection(jobId, selected) {

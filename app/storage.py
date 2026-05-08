@@ -49,6 +49,40 @@ GALLERY_COLUMNS = (
 )
 REQUIRED_GALLERY_COLUMNS = {"id", "prompt", "size", "filename", "created_at"}
 INTEGER_GALLERY_COLUMNS = {"image_width", "image_height", "output_compression", "n"}
+GENERATE_JOB_COLUMNS = (
+    "job_id",
+    "status",
+    "stage",
+    "message",
+    "operation",
+    "prompt",
+    "size",
+    "created_at",
+    "started_at",
+    "completed_at",
+    "updated_at",
+    "model",
+    "quality",
+    "output_format",
+    "output_compression",
+    "response_format",
+    "n",
+    "api_path",
+    "api_preset_name",
+    "duration",
+    "image_id",
+    "image_url",
+    "image_width",
+    "image_height",
+    "error",
+)
+INTEGER_GENERATE_JOB_COLUMNS = {
+    "output_compression",
+    "n",
+    "image_width",
+    "image_height",
+}
+ACTIVE_GENERATE_JOB_STATUSES = {"queued", "running"}
 SETTINGS_ACTIVE_PRESET_KEY = "active_preset_id"
 LEGACY_SETTINGS_IMPORTED_KEY = "legacy_settings_json_imported"
 LEGACY_GALLERY_IMPORTED_KEY = "legacy_gallery_json_imported"
@@ -181,6 +215,39 @@ def _ensure_database():
                     ON gallery_entries(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_gallery_entries_filename
                     ON gallery_entries(filename);
+
+                CREATE TABLE IF NOT EXISTS generate_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    stage TEXT,
+                    message TEXT,
+                    operation TEXT,
+                    prompt TEXT,
+                    size TEXT,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    model TEXT,
+                    quality TEXT,
+                    output_format TEXT,
+                    output_compression INTEGER,
+                    response_format TEXT,
+                    n INTEGER,
+                    api_path TEXT,
+                    api_preset_name TEXT,
+                    duration TEXT,
+                    image_id TEXT,
+                    image_url TEXT,
+                    image_width INTEGER,
+                    image_height INTEGER,
+                    error TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_generate_jobs_status_updated_at
+                    ON generate_jobs(status, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_generate_jobs_updated_at
+                    ON generate_jobs(updated_at DESC);
                 """
             )
             _migrate_legacy_json(conn)
@@ -382,6 +449,47 @@ def _gallery_entry_from_row(row: sqlite3.Row) -> dict[str, Any]:
         for column in GALLERY_COLUMNS
         if column in REQUIRED_GALLERY_COLUMNS or row[column] is not None
     }
+
+
+def _normalize_generate_job(job: dict[str, Any]) -> dict[str, Any]:
+    now = _utc_now()
+    normalized: dict[str, Any] = {
+        "job_id": str(job["job_id"]),
+        "status": str(job.get("status") or "queued"),
+        "created_at": str(job.get("created_at") or now),
+        "updated_at": str(job.get("updated_at") or now),
+    }
+
+    for column in GENERATE_JOB_COLUMNS:
+        if column in {"job_id", "status", "created_at", "updated_at"}:
+            continue
+        value = job.get(column)
+        if value is None:
+            continue
+        if column in INTEGER_GENERATE_JOB_COLUMNS:
+            try:
+                normalized[column] = int(value)
+            except (TypeError, ValueError):
+                continue
+        else:
+            normalized[column] = str(value)
+
+    return normalized
+
+
+def _generate_job_values(job: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(job.get(column) for column in GENERATE_JOB_COLUMNS)
+
+
+def _generate_job_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    job = {
+        column: row[column]
+        for column in GENERATE_JOB_COLUMNS
+        if row[column] is not None
+    }
+    if job.get("image_id"):
+        job["id"] = job["image_id"]
+    return job
 
 
 def _insert_gallery_entries_on_conn(
@@ -615,6 +723,27 @@ def _save_images_and_insert_gallery_entries(
                 _insert_gallery_entries_on_conn(conn, gallery_entries)
 
 
+def import_gallery_entries(
+    entries_data: list[tuple[bytes, dict[str, Any]]],
+) -> int:
+    if not entries_data:
+        return 0
+
+    _ensure_database()
+    with _storage_lock:
+        with _connect() as conn:
+            with _transaction(conn):
+                imported_count = 0
+                for image_bytes, entry in entries_data:
+                    normalized = _normalize_gallery_entry(entry)
+                    if not normalized:
+                        continue
+                    _save_image_unlocked(image_bytes, normalized["filename"])
+                    _insert_gallery_entries_on_conn(conn, [normalized])
+                    imported_count += 1
+                return imported_count
+
+
 async def add_to_gallery_async(
     image_bytes: bytes,
     image_id: str,
@@ -747,6 +876,13 @@ def get_all_filenames() -> list[str]:
         return [row["filename"] for row in rows if row["filename"]]
 
 
+def get_all_gallery_ids() -> list[str]:
+    _ensure_database()
+    with _connect() as conn:
+        rows = conn.execute("SELECT id FROM gallery_entries").fetchall()
+        return [row["id"] for row in rows if row["id"]]
+
+
 def add_to_gallery_sync(
     image_id: str,
     prompt: str,
@@ -810,6 +946,130 @@ def update_gallery_entry(image_id: str, updates: dict[str, Any]) -> GalleryEntry
                 ).fetchone()
 
     return GalleryEntry(**_gallery_entry_from_row(row))
+
+
+def upsert_generate_job(job: dict[str, Any]) -> dict[str, Any]:
+    _ensure_database()
+    normalized = _normalize_generate_job(job)
+    columns_sql = ", ".join(GENERATE_JOB_COLUMNS)
+    placeholders_sql = ", ".join("?" for _ in GENERATE_JOB_COLUMNS)
+    updates_sql = ", ".join(
+        f"{column} = excluded.{column}"
+        for column in GENERATE_JOB_COLUMNS
+        if column != "job_id"
+    )
+
+    with _connect() as conn:
+        with _transaction(conn):
+            conn.execute(
+                f"""
+                INSERT INTO generate_jobs ({columns_sql})
+                VALUES ({placeholders_sql})
+                ON CONFLICT(job_id) DO UPDATE SET {updates_sql}
+                """,
+                _generate_job_values(normalized),
+            )
+    return normalized
+
+
+def get_generate_job(job_id: str) -> dict[str, Any] | None:
+    _ensure_database()
+    with _connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT {", ".join(GENERATE_JOB_COLUMNS)}
+            FROM generate_jobs
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return _generate_job_from_row(row)
+
+
+def list_generate_jobs(
+    statuses: set[str] | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    _ensure_database()
+    with _connect() as conn:
+        params: list[Any] = []
+        sql = f"""
+            SELECT {", ".join(GENERATE_JOB_COLUMNS)}
+            FROM generate_jobs
+        """
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            sql += f" WHERE status IN ({placeholders})"
+            params.extend(sorted(statuses))
+        sql += " ORDER BY updated_at DESC, created_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+    return [_generate_job_from_row(row) for row in rows]
+
+
+def mark_active_generate_jobs_interrupted() -> int:
+    _ensure_database()
+    now = _utc_now()
+    with _connect() as conn:
+        with _transaction(conn):
+            placeholders = ", ".join("?" for _ in ACTIVE_GENERATE_JOB_STATUSES)
+            rows = conn.execute(
+                f"""
+                SELECT job_id
+                FROM generate_jobs
+                WHERE status IN ({placeholders})
+                """,
+                tuple(sorted(ACTIVE_GENERATE_JOB_STATUSES)),
+            ).fetchall()
+            if not rows:
+                return 0
+
+            conn.execute(
+                f"""
+                UPDATE generate_jobs
+                SET status = 'error',
+                    stage = 'interrupted',
+                    message = 'Job interrupted by server restart',
+                    error = 'Job interrupted by server restart',
+                    completed_at = ?,
+                    updated_at = ?
+                WHERE status IN ({placeholders})
+                """,
+                (now, now, *tuple(sorted(ACTIVE_GENERATE_JOB_STATUSES))),
+            )
+            return len(rows)
+
+
+def trim_generate_jobs(max_jobs: int):
+    _ensure_database()
+    with _connect() as conn:
+        with _transaction(conn):
+            row = conn.execute("SELECT COUNT(*) FROM generate_jobs").fetchone()
+            total = int(row[0]) if row else 0
+            if total <= max_jobs:
+                return
+
+            removable_count = total - max_jobs
+            rows = conn.execute(
+                """
+                SELECT job_id
+                FROM generate_jobs
+                WHERE status NOT IN ('queued', 'running')
+                ORDER BY updated_at ASC, created_at ASC
+                LIMIT ?
+                """,
+                (removable_count,),
+            ).fetchall()
+            if not rows:
+                return
+            conn.executemany(
+                "DELETE FROM generate_jobs WHERE job_id = ?",
+                [(row["job_id"],) for row in rows],
+            )
 
 
 def sync_gallery_with_image_files() -> int:

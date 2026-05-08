@@ -139,6 +139,42 @@ export function downloadAll() {
   }, 3000);
 }
 
+export function openImportArchivePicker() {
+  document.getElementById('importArchiveInput')?.click();
+}
+
+export async function importArchive(event) {
+  const file = event.target.files?.[0] || null;
+  if (!file) return;
+
+  const input = event.target;
+  const btn = document.getElementById('importArchiveBtn');
+  const original = btn?.innerHTML || '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;"></span> Importing...';
+  }
+
+  try {
+    const formData = new FormData();
+    formData.append('archive', file, file.name || 'gpt-images.zip');
+    const result = await apiFetch('/api/import', {
+      method: 'POST',
+      body: formData,
+    }, 'importing gallery archive');
+    await loadGallery(1);
+    showToast(`Imported ${result.imported || 0} image${result.imported === 1 ? '' : 's'}`, 'success');
+  } catch (e) {
+    showToast('Failed to import: ' + e.message, 'error');
+  } finally {
+    input.value = '';
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = original;
+    }
+  }
+}
+
 export async function copyPrompt(event, button) {
   event.stopPropagation();
   const prompt = button.dataset.prompt || '';

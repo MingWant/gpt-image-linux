@@ -514,14 +514,24 @@
 
     <!-- Gallery Section -->
     <section>
-      <div class="flex items-center justify-between mb-5">
+      <div class="flex flex-col gap-3 mb-5 sm:flex-row sm:items-center sm:justify-between">
         <h2 class="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Gallery</h2>
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-3">
           <span id="galleryCount" class="text-xs text-zinc-600"></span>
           <span id="galleryTotalSize" class="text-xs text-zinc-600"></span>
+          <input id="importArchiveInput" type="file" accept=".zip,application/zip,application/x-zip-compressed"
+            class="hidden" onchange="importArchive(event)">
+          <button id="importArchiveBtn" type="button" onclick="openImportArchivePicker()"
+            class="px-3 py-2 rounded-lg bg-zinc-800 text-zinc-300 text-xs font-medium hover:bg-zinc-700 transition-colors flex items-center gap-1.5"
+            title="Import images and metadata from ZIP">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+            </svg>
+            Import
+          </button>
           <button id="downloadAllBtn" onclick="downloadAll()"
             class="px-3 py-2 rounded-lg bg-zinc-800 text-zinc-300 text-xs font-medium hover:bg-zinc-700 transition-colors flex items-center gap-1.5"
-            title="Download all images as ZIP">
+            title="Download all images and metadata as ZIP">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
             </svg>

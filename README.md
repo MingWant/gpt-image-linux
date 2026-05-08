@@ -32,9 +32,9 @@ Key characteristics:
 - image-to-image edits via OpenAI-compatible `/v1/images/edits`
 - auto, ratio-based, and custom image sizes
 - preview UI with prompt, parameters, elapsed time, and detailed English generation/edit stages
-- job polling UI with 2-second interval and 10-minute timeout
-- active job history drawer with selectable cancellation for queued/running generation and edit jobs
-- gallery with pagination, lightbox, per-image "Edit this image" actions, download, download all as ZIP, delete, delete all, copy prompt, copy image URL, and total image size display
+- SSE progress updates for preview state with a polling fallback on stream reconnect failure
+- active job history drawer backed by SSE with selectable cancellation for queued/running generation and edit jobs
+- gallery with pagination, lightbox, per-image "Edit this image" actions, download, export/import ZIP with `metadata.json`, delete, delete all, copy prompt, copy image URL, and total image size display
 - optional site access key with session unlock
 - optional IP allowlist and reverse proxy header support
 - app version badge with GitHub release update detection
@@ -75,30 +75,31 @@ Runtime persistent storage is minimal:
 
 - generated images are saved in the `images/` directory
 - gallery metadata and API presets are stored in SQLite at `data/app.sqlite3`, including generation duration
-- generation jobs and active task handles live only in process memory and are lost on restart
+- generation job status, errors, timing, and result metadata are stored in SQLite at `data/app.sqlite3`
+- active `asyncio.Task` handles live only in process memory; queued/running jobs from a previous process are marked interrupted on startup
 
 ### Generation flow
 
 1. the frontend sends a request to `/api/generate`
-2. the backend validates settings and creates an in-memory job
+2. the backend validates settings and creates a SQLite-backed job
 3. the backend starts `run_generate_job(...)` with `asyncio.create_task` and tracks the task handle while it is active
 4. the backend reports detailed stages while building the payload, waiting for the upstream API, parsing JSON, extracting image data, decoding `b64_json`, validating bytes, saving files, and updating gallery metadata
 5. image data is decoded from base64 or downloaded from URL
 6. the backend saves the file and appends the gallery metadata entry
-7. the frontend polls `/api/generate/{job_id}` until success or error and renders the current stage in Preview
-8. the job history drawer can list active jobs via `/api/generate/jobs` and cancel selected jobs via `DELETE /api/generate/{job_id}`
+7. the frontend listens to `/api/generate/{job_id}/events` and renders each SSE progress update in Preview
+8. the job history drawer listens to `/api/generate/jobs/events`, can refresh via `/api/generate/jobs`, and cancels selected jobs via `DELETE /api/generate/{job_id}`
 
 ### Edit flow
 
 1. the frontend lets the user upload an image file or choose an existing gallery image via "Edit this image" on cards/lightbox
 2. the frontend sends current parameters to `/api/edits` (upload flow) or `/api/edits/from-gallery/{image_id}` (gallery flow)
-3. the backend creates an in-memory job and calls upstream `/v1/images/edits`
+3. the backend creates a SQLite-backed job and calls upstream `/v1/images/edits`
 4. the source image is forwarded as multipart `image` (from upload bytes or gallery file bytes)
 5. supported parameters are forwarded as multipart fields: `prompt`, `model`, `n`, `size`, `quality`, `output_format`, optional `response_format`, and `output_compression` when applicable
 6. the backend reports detailed stages while building multipart form data, uploading the source image, waiting for the upstream API, parsing JSON, extracting edited image data, decoding `b64_json`, validating bytes, and saving files
 7. returned image data is decoded from base64 or downloaded from URL
 8. the backend saves the edited image and appends the gallery metadata entry
-9. the frontend polls `/api/generate/{job_id}` and renders preview/gallery like normal generation
+9. the frontend listens to `/api/generate/{job_id}/events` and renders preview/gallery like normal generation
 
 ## Tech stack
 
@@ -302,14 +303,17 @@ The panel supports these upstream paths:
 | `POST` | `/api/generate` | Start an image generation job |
 | `POST` | `/api/edits` | Start an image edit job with multipart image upload |
 | `POST` | `/api/edits/from-gallery/{image_id}` | Start an image edit job using an existing gallery image as source |
-| `GET` | `/api/generate/jobs` | List queued/running generation and edit jobs |
+| `GET` | `/api/generate/jobs` | List queued/running generation and edit jobs; pass `include_finished=true` for persisted history |
+| `GET` | `/api/generate/jobs/events` | Stream queued/running generation and edit jobs over SSE |
 | `GET` | `/api/generate/{job_id}` | Get generation job status or result |
+| `GET` | `/api/generate/{job_id}/events` | Stream generation job status/progress over SSE |
 | `DELETE` | `/api/generate/{job_id}` | Cancel and remove a queued/running generation or edit job |
 | `GET` | `/api/gallery` | List gallery images with pagination |
 | `GET` | `/api/image/{filename}` | Serve image file |
 | `GET` | `/api/download/{filename}` | Download image as attachment |
 | `DELETE` | `/api/gallery/{id}` | Delete gallery entry and its server image file |
-| `GET` | `/api/download-all` | Download all gallery images as a ZIP file |
+| `GET` | `/api/download-all` | Download all gallery images plus `metadata.json` as a ZIP file |
+| `POST` | `/api/import` | Import a ZIP created by `/api/download-all` |
 | `DELETE` | `/api/gallery` | Delete all gallery entries and server image files |
 
 ## Runtime behavior notes
@@ -318,12 +322,14 @@ The panel supports these upstream paths:
 - The frontend checks `https://api.github.com/repos/{GITHUB_REPO}/releases/latest` on page load and shows a header badge when a newer release exists.
 - GitHub release checks are cached in browser `localStorage` for 6 hours to avoid rate limits. If the check fails, the UI keeps showing the current version and continues normally.
 - API presets are persisted to the SQLite database configured by `DATABASE_FILE`.
+- Generation and edit job history is persisted to SQLite with status, stage, error, timing, request parameters, and result metadata.
 - If the database has no presets, the default preset is initialized from `DEFAULT_API_URL`, `DEFAULT_API_KEY`, and `DEFAULT_API_PATH`.
 - API keys are masked in the UI but stored as plain text in SQLite.
 - Existing `data/settings.json` and `data/gallery.json` files are imported once when the matching database tables are empty.
 - On startup, the backend scans `IMAGES_DIR` and removes gallery metadata entries whose image files are missing.
-- Queued/running generation and edit jobs can be cancelled; cancellation removes the in-memory job and calls `asyncio.Task.cancel()`.
-- Finished generation jobs are trimmed when the job store exceeds `MAX_GENERATE_JOBS`.
+- On startup, queued/running jobs persisted by a previous process are marked as interrupted because their task handles cannot survive restart.
+- Queued/running generation and edit jobs can be cancelled; cancellation updates SQLite and calls `asyncio.Task.cancel()` when the task is still in memory.
+- Finished generation jobs are trimmed from SQLite when the job store exceeds `MAX_GENERATE_JOBS`.
 - `DELETE /api/gallery/{image_id}` removes metadata and deletes the image file from `IMAGES_DIR` when no remaining gallery entry references that filename.
 - `DELETE /api/gallery` removes all gallery metadata and deletes image files from `IMAGES_DIR`.
 - Streaming image responses use an opened file handle; avoid interrupting cleanup logic if you modify serving behavior.
@@ -346,7 +352,7 @@ Helpful guidelines:
 - keep the frontend build flow minimal (currently only Tailwind CSS compilation)
 - avoid storing real API keys in repository files
 - do not commit generated images or runtime gallery metadata unless explicitly requested
-- preserve the existing async generation flow and polling model unless the change explicitly requires altering job lifecycle behavior
+- preserve the existing async generation flow and SSE progress model unless the change explicitly requires altering job lifecycle behavior
 
 ## License
 
@@ -392,9 +398,9 @@ GPT Image Panel 是一个轻量级 FastAPI Web 界面，用于图像生成和图
 - 通过 OpenAI 兼容 `/v1/images/edits` 支持图生图编辑
 - 支持自动、比例和自定义图像尺寸
 - 预览界面：显示提示词、参数、真实图片分辨率、生成耗时，以及英文 generation/edit 细分阶段
-- 任务轮询界面：2 秒轮询一次，最长 10 分钟
-- 历史任务抽屉：列出正在排队/运行的生成和编辑任务，并支持选择后主动终止
-- Gallery：分页、Lightbox、卡片/Lightbox 直接 “Edit this image”、生成所用 preset、下载、批量下载为 ZIP、删除、全部删除、复制提示词、复制图片链接、耗时
+- 预览进度通过 SSE 实时推送，流断开时退回轮询兜底
+- 历史任务抽屉通过 SSE 更新正在排队/运行的生成和编辑任务，并支持选择后主动终止
+- Gallery：分页、Lightbox、卡片/Lightbox 直接 “Edit this image”、生成所用 preset、下载、导出/导入带 `metadata.json` 的 ZIP、删除、全部删除、复制提示词、复制图片链接、耗时
 - 可选站点访问密钥
 - 可选 IP 白名单和反向代理头支持
 
@@ -434,30 +440,31 @@ npm run build:css
 
 - 生成的图片保存在 `images/` 目录
 - Gallery 元数据和 API 预设保存在 SQLite：`data/app.sqlite3`，包含真实图片宽高和生成耗时
-- 生成任务和运行中的 `asyncio.Task` 句柄仅保存在进程内存中，重启后会丢失
+- 生成/编辑任务的状态、错误、耗时、请求参数和结果元数据保存在 SQLite：`data/app.sqlite3`
+- 运行中的 `asyncio.Task` 句柄仅保存在进程内存中；重启后，上个进程遗留的排队/运行任务会被标记为 interrupted
 
 ### 生成流程
 
 1. 前端请求 `/api/generate`
-2. 后端校验配置并创建内存任务
+2. 后端校验配置并创建持久化到 SQLite 的任务
 3. 后端通过 `asyncio.create_task` 启动 `run_generate_job(...)`，并在任务运行期间记录 task 句柄
 4. 后端在构建 payload、等待上游 API、解析 JSON、提取图片数据、解码 `b64_json`、校验字节、保存文件和更新 Gallery 元数据时持续上报细分阶段
 5. 图片数据从 base64 解码或从 URL 下载
 6. 后端保存文件并写入 Gallery 元数据
-7. 前端轮询 `/api/generate/{job_id}` 直到成功或失败，并在 Preview 中渲染当前阶段
-8. 历史任务抽屉通过 `/api/generate/jobs` 查询运行中任务，并通过 `DELETE /api/generate/{job_id}` 取消选中的任务
+7. 前端监听 `/api/generate/{job_id}/events` 的 SSE 事件，并在 Preview 中实时渲染当前阶段
+8. 历史任务抽屉监听 `/api/generate/jobs/events`，也可通过 `/api/generate/jobs` 手动刷新，并通过 `DELETE /api/generate/{job_id}` 取消选中的任务
 
 ### 编辑流程
 
 1. 前端支持两种编辑源：上传任意图片文件，或在 Gallery 卡片/Lightbox 点击 “Edit this image”
 2. 前端将当前参数发送到 `/api/edits`（上传流）或 `/api/edits/from-gallery/{image_id}`（Gallery 流）
-3. 后端创建内存任务并调用上游 `/v1/images/edits`
+3. 后端创建持久化到 SQLite 的任务并调用上游 `/v1/images/edits`
 4. 源图片以 multipart `image` 字段转发（来自上传字节或 Gallery 文件字节）
 5. 支持的参数以 multipart 字段转发：`prompt`、`model`、`n`、`size`、`quality`、`output_format`、可选的 `response_format`，以及适用时的 `output_compression`
 6. 后端在构建 multipart 表单、上传源图片、等待上游 API、解析 JSON、提取编辑图片数据、解码 `b64_json`、校验字节和保存文件时持续上报细分阶段
 7. 返回图片数据从 base64 解码或从 URL 下载
 8. 后端保存编辑后的图片并写入 Gallery 元数据
-9. 前端轮询 `/api/generate/{job_id}`，并像普通生成一样渲染预览和 Gallery
+9. 前端监听 `/api/generate/{job_id}/events`，并像普通生成一样渲染预览和 Gallery
 
 ## 技术栈
 
@@ -658,25 +665,30 @@ curl http://localhost:9090/health
 | `POST` | `/api/generate` | 创建图像生成任务 |
 | `POST` | `/api/edits` | 使用 multipart 图片上传创建图像编辑任务 |
 | `POST` | `/api/edits/from-gallery/{image_id}` | 使用已有 Gallery 图片作为源图创建图像编辑任务 |
-| `GET` | `/api/generate/jobs` | 查询排队/运行中的生成和编辑任务 |
+| `GET` | `/api/generate/jobs` | 查询排队/运行中的生成和编辑任务；传 `include_finished=true` 可查持久化历史 |
+| `GET` | `/api/generate/jobs/events` | 通过 SSE 推送排队/运行中的生成和编辑任务 |
 | `GET` | `/api/generate/{job_id}` | 查询任务状态或结果 |
+| `GET` | `/api/generate/{job_id}/events` | 通过 SSE 推送单个任务状态和进度 |
 | `DELETE` | `/api/generate/{job_id}` | 取消并移除排队/运行中的生成或编辑任务 |
 | `GET` | `/api/gallery` | 分页查询 Gallery 图片 |
 | `GET` | `/api/image/{filename}` | 访问图片文件 |
 | `GET` | `/api/download/{filename}` | 下载图片 |
 | `DELETE` | `/api/gallery/{id}` | 删除 Gallery 条目和对应服务器图片文件 |
-| `GET` | `/api/download-all` | 下载 Gallery 所有图片为 ZIP 文件 |
+| `GET` | `/api/download-all` | 下载 Gallery 所有图片和 `metadata.json` 为 ZIP 文件 |
+| `POST` | `/api/import` | 导入 `/api/download-all` 创建的 ZIP |
 | `DELETE` | `/api/gallery` | 删除所有 Gallery 条目和服务器图片文件 |
 
 ## 运行时注意事项
 
 - API 预设持久化保存在 `DATABASE_FILE` 指向的 SQLite 数据库。
+- 生成/编辑任务历史持久化保存在 SQLite，包含状态、阶段、错误、耗时、请求参数和结果元数据。
 - 如果数据库中没有 preset，默认预设会使用 `DEFAULT_API_URL`、`DEFAULT_API_KEY` 和 `DEFAULT_API_PATH` 初始化。
 - API Key 在界面中掩码展示，但会以明文保存到 SQLite。
 - 旧的 `data/settings.json` 和 `data/gallery.json` 会在对应数据库表为空时导入一次。
 - 启动时后端会扫描 `IMAGES_DIR`，并移除图片文件已不存在的 Gallery 元数据条目。
-- 排队/运行中的生成和编辑任务可以主动取消；取消会移除内存任务并调用 `asyncio.Task.cancel()`。
-- 当任务数量超过 `MAX_GENERATE_JOBS` 时，已结束任务会被裁剪。
+- 启动时，上个进程遗留的排队/运行任务会被标记为 interrupted，因为 `asyncio.Task` 句柄无法跨进程恢复。
+- 排队/运行中的生成和编辑任务可以主动取消；取消会更新 SQLite，并在任务句柄仍在内存中时调用 `asyncio.Task.cancel()`。
+- 当任务数量超过 `MAX_GENERATE_JOBS` 时，已结束任务会从 SQLite 裁剪。
 - `DELETE /api/gallery/{image_id}` 会删除元数据；如果没有其他 Gallery 条目引用同一文件名，也会删除 `IMAGES_DIR` 中的对应图片文件。
 - `DELETE /api/gallery` 会删除所有 Gallery 元数据，并删除 `IMAGES_DIR` 中的图片文件。
 - 图片流式返回依赖已打开的文件句柄，修改相关逻辑时需注意资源释放。
@@ -698,7 +710,7 @@ curl http://localhost:9090/health
 - 前端构建流程保持最小化（当前仅 Tailwind CSS 编译）
 - 不要在仓库文件中保存真实 API Key
 - 除非明确要求，否则不要提交生成图片或运行时 Gallery 元数据
-- 除非明确要求改变任务生命周期，否则保留现有异步生成与轮询机制
+- 除非明确要求改变任务生命周期，否则保留现有异步生成与 SSE 进度机制
 
 ## 许可证
 

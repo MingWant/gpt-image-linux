@@ -165,10 +165,14 @@ class GenerateJobStatus(BaseModel):
     stage: Optional[str] = None
     operation: Optional[Literal["generation", "edit"]] = None
     id: Optional[str] = None
+    image_id: Optional[str] = None
     image_url: Optional[str] = None
     prompt: Optional[str] = None
     size: Optional[str] = None
     created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    updated_at: Optional[str] = None
     image_width: Optional[int] = None
     image_height: Optional[int] = None
     model: Optional[str] = None
@@ -180,6 +184,7 @@ class GenerateJobStatus(BaseModel):
     api_path: Optional[str] = None
     api_preset_name: Optional[str] = None
     duration: Optional[str] = None
+    error: Optional[str] = None
 
 
 class GalleryResponse(BaseModel):

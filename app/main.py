@@ -3,7 +3,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from contextlib import asynccontextmanager
 import asyncio
+import json
 import hmac
+import hashlib
 import io
 import logging
 import mimetypes
@@ -69,6 +71,9 @@ async def lifespan(app: FastAPI):
     Path(config.IMAGES_DIR).mkdir(parents=True, exist_ok=True)
     Path(config.DATA_DIR).mkdir(parents=True, exist_ok=True)
     storage.verify_storage_writable()
+    interrupted_jobs = storage.mark_active_generate_jobs_interrupted()
+    if interrupted_jobs:
+        logger.info("Marked %s interrupted generation job(s)", interrupted_jobs)
     removed_gallery_entries = storage.sync_gallery_with_image_files()
     if removed_gallery_entries:
         logger.info(
@@ -78,6 +83,8 @@ async def lifespan(app: FastAPI):
     load_api_settings()
     app.state.generate_jobs = {}
     app.state.generate_job_tasks = {}
+    app.state.generate_job_subscribers = {}
+    app.state.generate_jobs_subscribers = set()
     app.state.access_failures: dict[str, tuple[int, float]] = {}
     try:
         yield
@@ -135,6 +142,7 @@ AUTH_EXEMPT_PATHS = {
 AUTH_EXEMPT_PREFIXES = ("/static/",)
 NO_CACHE_PATHS = {"/", "/static/index.html"}
 NO_CACHE_PREFIXES = ("/static/js/",)
+ACTIVE_JOB_STATUSES = {"queued", "running"}
 
 
 def apply_security_headers(response: Response) -> Response:
@@ -327,20 +335,206 @@ def build_settings_response() -> SettingsResponse:
     )
 
 
+def get_job_subscribers() -> dict[str, set[asyncio.Queue]]:
+    subscribers = getattr(app.state, "generate_job_subscribers", None)
+    if subscribers is None:
+        subscribers = {}
+        app.state.generate_job_subscribers = subscribers
+    return subscribers
+
+
+def get_jobs_subscribers() -> set[asyncio.Queue]:
+    subscribers = getattr(app.state, "generate_jobs_subscribers", None)
+    if subscribers is None:
+        subscribers = set()
+        app.state.generate_jobs_subscribers = subscribers
+    return subscribers
+
+
+def serialize_sse_event(event: str, data: dict | list) -> str:
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+def publish_queue(queue: asyncio.Queue, event: dict):
+    try:
+        queue.put_nowait(event)
+    except asyncio.QueueFull:
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
+
+def publish_generate_job(job: dict):
+    event = {"event": "job", "data": job}
+    for queue in list(get_job_subscribers().get(job["job_id"], set())):
+        publish_queue(queue, event)
+    publish_generate_jobs()
+
+
+def publish_generate_jobs():
+    jobs = list_active_generate_jobs()
+    event = {"event": "jobs", "data": jobs}
+    for queue in list(get_jobs_subscribers()):
+        publish_queue(queue, event)
+
+
+def build_gallery_export_metadata(entries: list) -> dict:
+    exported_at = datetime.now(timezone.utc).isoformat()
+    images = []
+    for entry in entries:
+        data = entry.model_dump()
+        path = storage.get_image_path(entry.filename)
+        try:
+            stat = path.stat()
+            data["bytes"] = stat.st_size
+            data["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            data["bytes"] = None
+        images.append(data)
+
+    return {
+        "schema_version": 1,
+        "exported_at": exported_at,
+        "app": {
+            "name": "gpt-image-linux",
+            "version": config.APP_VERSION,
+        },
+        "images": images,
+    }
+
+
+def sanitize_import_filename(filename: str, fallback_ext: str = ".png") -> str:
+    name = Path(filename or "").name
+    suffix = Path(name).suffix.lower()
+    if suffix not in IMAGE_UPLOAD_EXTENSIONS:
+        suffix = fallback_ext if fallback_ext in IMAGE_UPLOAD_EXTENSIONS else ".png"
+    stem = Path(name).stem or uuid.uuid4().hex
+    safe_stem = "".join(
+        char if char.isalnum() or char in {"-", "_", "."} else "_"
+        for char in stem
+    ).strip("._")
+    return f"{safe_stem or uuid.uuid4().hex}{suffix}"
+
+
+def build_import_gallery_entries(zip_bytes: bytes) -> list[tuple[bytes, dict]]:
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except zipfile.BadZipFile as e:
+        raise HTTPException(status_code=400, detail="Import file must be a valid ZIP") from e
+
+    with zf:
+        try:
+            metadata = json.loads(zf.read("metadata.json").decode("utf-8"))
+        except KeyError as e:
+            raise HTTPException(status_code=400, detail="metadata.json is required") from e
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise HTTPException(status_code=400, detail="metadata.json is invalid") from e
+
+        raw_images = metadata.get("images")
+        if not isinstance(raw_images, list):
+            raise HTTPException(status_code=400, detail="metadata.json images must be a list")
+
+        names = {info.filename for info in zf.infolist() if not info.is_dir()}
+        imports: list[tuple[bytes, dict]] = []
+        used_names = set(storage.get_all_filenames())
+        used_ids = set(storage.get_all_gallery_ids())
+
+        for raw_entry in raw_images:
+            if not isinstance(raw_entry, dict):
+                continue
+
+            exported_filename = str(raw_entry.get("filename") or "")
+            zip_name = exported_filename if exported_filename in names else f"images/{exported_filename}"
+            if zip_name not in names:
+                continue
+
+            try:
+                image_bytes = zf.read(zip_name)
+            except KeyError:
+                continue
+            if not image_bytes:
+                continue
+            if len(image_bytes) > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Imported image is too large: {exported_filename}",
+                )
+
+            original_name = Path(exported_filename or zip_name).name
+            filename = sanitize_import_filename(original_name)
+            base = Path(filename).stem
+            ext = Path(filename).suffix
+            counter = 1
+            while filename in used_names:
+                filename = f"{base}_{counter}{ext}"
+                counter += 1
+            used_names.add(filename)
+
+            image_id = str(raw_entry.get("id") or uuid.uuid4())
+            while image_id in used_ids:
+                image_id = str(uuid.uuid4())
+            used_ids.add(image_id)
+
+            entry = {
+                **raw_entry,
+                "id": image_id,
+                "filename": filename,
+                "created_at": str(raw_entry.get("created_at") or datetime.now(timezone.utc).isoformat()),
+            }
+            imports.append((image_bytes, entry))
+
+        return imports
+
+
+def build_job_update(job_id: str, updates: dict) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    existing = app.state.generate_jobs.get(job_id) or storage.get_generate_job(job_id) or {}
+    job = {
+        **existing,
+        **updates,
+        "job_id": job_id,
+        "updated_at": now,
+    }
+    if "created_at" not in job:
+        job["created_at"] = now
+    if job.get("image_id"):
+        job["id"] = job["image_id"]
+    return job
+
+
+def store_generate_job(job_id: str, updates: dict) -> dict:
+    job = build_job_update(job_id, updates)
+    status = job.get("status")
+    if status in ACTIVE_JOB_STATUSES:
+        app.state.generate_jobs[job_id] = job
+    else:
+        app.state.generate_jobs.pop(job_id, None)
+    storage.upsert_generate_job(job)
+    publish_generate_job(job)
+    return job
+
+
+def list_active_generate_jobs() -> list[dict]:
+    jobs_by_id = {
+        job["job_id"]: job
+        for job in storage.list_generate_jobs(statuses=ACTIVE_JOB_STATUSES)
+    }
+    for job_id, job in app.state.generate_jobs.items():
+        if job.get("status") in ACTIVE_JOB_STATUSES:
+            jobs_by_id[job_id] = job
+    jobs = list(jobs_by_id.values())
+    jobs.sort(key=lambda job: job.get("updated_at") or job.get("created_at", ""), reverse=True)
+    return jobs
+
+
 def trim_generate_jobs():
-    jobs = app.state.generate_jobs
-    if len(jobs) <= MAX_GENERATE_JOBS:
-        return
-
-    finished_jobs = [
-        (job_id, job.get("created_at", ""))
-        for job_id, job in jobs.items()
-        if job.get("status") in {"success", "error"}
-    ]
-    finished_jobs.sort(key=lambda item: item[1])
-
-    for job_id, _ in finished_jobs[: len(jobs) - MAX_GENERATE_JOBS]:
-        jobs.pop(job_id, None)
+    storage.trim_generate_jobs(MAX_GENERATE_JOBS)
 
 
 def get_generate_job_tasks() -> dict[str, asyncio.Task]:
@@ -367,7 +561,10 @@ def build_pending_job(
     req: GenerateRequest | EditRequest,
     operation: str,
     message: str,
+    api_path: str | None = None,
+    api_preset_name: str | None = None,
 ) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
     return {
         "job_id": job_id,
         "status": "queued",
@@ -376,13 +573,16 @@ def build_pending_job(
         "operation": operation,
         "prompt": req.prompt,
         "size": req.size,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now,
+        "updated_at": now,
         "model": req.model,
         "quality": req.quality,
         "output_format": req.output_format,
         "output_compression": req.output_compression,
         "response_format": req.response_format,
         "n": req.n,
+        "api_path": api_path,
+        "api_preset_name": api_preset_name,
     }
 
 
@@ -396,13 +596,14 @@ def set_generate_job_progress(
     if not job:
         return
 
-    job.update(
+    store_generate_job(
+        job_id,
         {
             "status": "running",
             "stage": stage,
             "message": message,
             "operation": operation,
-        }
+        },
     )
 
 
@@ -485,12 +686,17 @@ def queue_edit_job(
         )
 
     job_id = str(uuid.uuid4())
-    app.state.generate_jobs[job_id] = build_pending_job(
-        job_id,
-        req,
-        "edit",
-        "Queued image edit",
+    pending_job = build_pending_job(
+        job_id=job_id,
+        req=req,
+        operation="edit",
+        message="Queued image edit",
+        api_path="/v1/images/edits",
+        api_preset_name=api_preset_name,
     )
+    app.state.generate_jobs[job_id] = pending_job
+    storage.upsert_generate_job(pending_job)
+    publish_generate_job(pending_job)
     track_generate_job_task(
         job_id,
         asyncio.create_task(
@@ -698,25 +904,26 @@ async def run_generate_job(
     req: GenerateRequest,
 ):
     started_at = time.monotonic()
-    jobs = app.state.generate_jobs
-    jobs[job_id] = {
-        "job_id": job_id,
-        "status": "running",
-        "stage": "starting_generation",
-        "message": "Starting image generation",
-        "operation": "generation",
-        "prompt": req.prompt,
-        "size": req.size,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "model": req.model,
-        "quality": req.quality,
-        "output_format": req.output_format,
-        "output_compression": req.output_compression,
-        "response_format": req.response_format,
-        "n": req.n,
-        "api_path": api_path,
-        "api_preset_name": api_preset_name,
-    }
+    store_generate_job(
+        job_id,
+        {
+            "status": "running",
+            "stage": "starting_generation",
+            "message": "Starting image generation",
+            "operation": "generation",
+            "prompt": req.prompt,
+            "size": req.size,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "model": req.model,
+            "quality": req.quality,
+            "output_format": req.output_format,
+            "output_compression": req.output_compression,
+            "response_format": req.response_format,
+            "n": req.n,
+            "api_path": api_path,
+            "api_preset_name": api_preset_name,
+        },
+    )
 
     try:
         entries = await proxy.call_image_generation_api(
@@ -734,11 +941,23 @@ async def run_generate_job(
         )
         duration = f"{time.monotonic() - started_at:.2f}s"
     except asyncio.CancelledError:
-        jobs.pop(job_id, None)
+        store_generate_job(
+            job_id,
+            {
+                "status": "error",
+                "stage": "cancelled",
+                "message": "Generation job cancelled",
+                "operation": "generation",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration": f"{time.monotonic() - started_at:.2f}s",
+                "error": "Generation job cancelled",
+            },
+        )
+        trim_generate_jobs()
         logger.info("Image generation cancelled: job_id=%s", job_id)
         raise
     except Exception as e:
-        if job_id not in jobs:
+        if job_id not in app.state.generate_jobs:
             logger.info("Image generation stopped after cancellation: job_id=%s", job_id)
             return
         error_message = get_exception_message(e)
@@ -755,18 +974,22 @@ async def run_generate_job(
             req.response_format,
             req.n,
         )
-        jobs[job_id] = {
-            "job_id": job_id,
-            "status": "error",
-            "stage": "generation_failed",
-            "message": error_message,
-            "operation": "generation",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
+        store_generate_job(
+            job_id,
+            {
+                "status": "error",
+                "stage": "generation_failed",
+                "message": error_message,
+                "operation": "generation",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration": f"{time.monotonic() - started_at:.2f}s",
+                "error": error_message,
+            },
+        )
         trim_generate_jobs()
         return
 
-    if job_id not in jobs:
+    if job_id not in app.state.generate_jobs:
         logger.info("Image generation result discarded after cancellation: job_id=%s", job_id)
         return
 
@@ -778,29 +1001,31 @@ async def run_generate_job(
     )
     first_entry = entries[0]
     storage.update_gallery_entry(first_entry.id, {"duration": duration})
-    jobs[job_id] = {
-        "job_id": job_id,
-        "status": "success",
-        "stage": "completed",
-        "message": "Image generation completed",
-        "operation": "generation",
-        "id": first_entry.id,
-        "image_url": f"/api/image/{first_entry.filename}",
-        "prompt": first_entry.prompt,
-        "size": first_entry.size,
-        "created_at": first_entry.created_at,
-        "image_width": first_entry.image_width,
-        "image_height": first_entry.image_height,
-        "model": first_entry.model,
-        "quality": first_entry.quality,
-        "output_format": first_entry.output_format,
-        "output_compression": first_entry.output_compression,
-        "response_format": first_entry.response_format,
-        "n": first_entry.n,
-        "api_path": first_entry.api_path,
-        "api_preset_name": first_entry.api_preset_name,
-        "duration": duration,
-    }
+    store_generate_job(
+        job_id,
+        {
+            "status": "success",
+            "stage": "completed",
+            "message": "Image generation completed",
+            "operation": "generation",
+            "image_id": first_entry.id,
+            "image_url": f"/api/image/{first_entry.filename}",
+            "prompt": first_entry.prompt,
+            "size": first_entry.size,
+            "image_width": first_entry.image_width,
+            "image_height": first_entry.image_height,
+            "model": first_entry.model,
+            "quality": first_entry.quality,
+            "output_format": first_entry.output_format,
+            "output_compression": first_entry.output_compression,
+            "response_format": first_entry.response_format,
+            "n": first_entry.n,
+            "api_path": first_entry.api_path,
+            "api_preset_name": first_entry.api_preset_name,
+            "duration": duration,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
     trim_generate_jobs()
 
 
@@ -815,25 +1040,26 @@ async def run_edit_job(
     image_content_type: str,
 ):
     started_at = time.monotonic()
-    jobs = app.state.generate_jobs
-    jobs[job_id] = {
-        "job_id": job_id,
-        "status": "running",
-        "stage": "starting_edit",
-        "message": "Starting image edit",
-        "operation": "edit",
-        "prompt": req.prompt,
-        "size": req.size,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "model": req.model,
-        "quality": req.quality,
-        "output_format": req.output_format,
-        "output_compression": req.output_compression,
-        "response_format": req.response_format,
-        "n": req.n,
-        "api_path": "/v1/images/edits",
-        "api_preset_name": api_preset_name,
-    }
+    store_generate_job(
+        job_id,
+        {
+            "status": "running",
+            "stage": "starting_edit",
+            "message": "Starting image edit",
+            "operation": "edit",
+            "prompt": req.prompt,
+            "size": req.size,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "model": req.model,
+            "quality": req.quality,
+            "output_format": req.output_format,
+            "output_compression": req.output_compression,
+            "response_format": req.response_format,
+            "n": req.n,
+            "api_path": "/v1/images/edits",
+            "api_preset_name": api_preset_name,
+        },
+    )
 
     try:
         entries = await proxy.call_image_edit_api(
@@ -853,11 +1079,23 @@ async def run_edit_job(
         )
         duration = f"{time.monotonic() - started_at:.2f}s"
     except asyncio.CancelledError:
-        jobs.pop(job_id, None)
+        store_generate_job(
+            job_id,
+            {
+                "status": "error",
+                "stage": "cancelled",
+                "message": "Image edit job cancelled",
+                "operation": "edit",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration": f"{time.monotonic() - started_at:.2f}s",
+                "error": "Image edit job cancelled",
+            },
+        )
+        trim_generate_jobs()
         logger.info("Image edit cancelled: job_id=%s", job_id)
         raise
     except Exception as e:
-        if job_id not in jobs:
+        if job_id not in app.state.generate_jobs:
             logger.info("Image edit stopped after cancellation: job_id=%s", job_id)
             return
         error_message = get_exception_message(e)
@@ -874,18 +1112,22 @@ async def run_edit_job(
             req.response_format,
             req.n,
         )
-        jobs[job_id] = {
-            "job_id": job_id,
-            "status": "error",
-            "stage": "edit_failed",
-            "message": error_message,
-            "operation": "edit",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
+        store_generate_job(
+            job_id,
+            {
+                "status": "error",
+                "stage": "edit_failed",
+                "message": error_message,
+                "operation": "edit",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration": f"{time.monotonic() - started_at:.2f}s",
+                "error": error_message,
+            },
+        )
         trim_generate_jobs()
         return
 
-    if job_id not in jobs:
+    if job_id not in app.state.generate_jobs:
         logger.info("Image edit result discarded after cancellation: job_id=%s", job_id)
         return
 
@@ -897,29 +1139,31 @@ async def run_edit_job(
     )
     first_entry = entries[0]
     storage.update_gallery_entry(first_entry.id, {"duration": duration})
-    jobs[job_id] = {
-        "job_id": job_id,
-        "status": "success",
-        "stage": "completed",
-        "message": "Image edit completed",
-        "operation": "edit",
-        "id": first_entry.id,
-        "image_url": f"/api/image/{first_entry.filename}",
-        "prompt": first_entry.prompt,
-        "size": first_entry.size,
-        "created_at": first_entry.created_at,
-        "image_width": first_entry.image_width,
-        "image_height": first_entry.image_height,
-        "model": first_entry.model,
-        "quality": first_entry.quality,
-        "output_format": first_entry.output_format,
-        "output_compression": first_entry.output_compression,
-        "response_format": first_entry.response_format,
-        "n": first_entry.n,
-        "api_path": first_entry.api_path,
-        "api_preset_name": first_entry.api_preset_name,
-        "duration": duration,
-    }
+    store_generate_job(
+        job_id,
+        {
+            "status": "success",
+            "stage": "completed",
+            "message": "Image edit completed",
+            "operation": "edit",
+            "image_id": first_entry.id,
+            "image_url": f"/api/image/{first_entry.filename}",
+            "prompt": first_entry.prompt,
+            "size": first_entry.size,
+            "image_width": first_entry.image_width,
+            "image_height": first_entry.image_height,
+            "model": first_entry.model,
+            "quality": first_entry.quality,
+            "output_format": first_entry.output_format,
+            "output_compression": first_entry.output_compression,
+            "response_format": first_entry.response_format,
+            "n": first_entry.n,
+            "api_path": first_entry.api_path,
+            "api_preset_name": first_entry.api_preset_name,
+            "duration": duration,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
     trim_generate_jobs()
 
 
@@ -937,12 +1181,17 @@ async def generate(req: GenerateRequest):
         raise HTTPException(status_code=400, detail="API Key not configured. Please set it in Settings.")
 
     job_id = str(uuid.uuid4())
-    app.state.generate_jobs[job_id] = build_pending_job(
-        job_id,
-        req,
-        "generation",
-        "Queued image generation",
+    pending_job = build_pending_job(
+        job_id=job_id,
+        req=req,
+        operation="generation",
+        message="Queued image generation",
+        api_path=api_path,
+        api_preset_name=api_preset_name,
     )
+    app.state.generate_jobs[job_id] = pending_job
+    storage.upsert_generate_job(pending_job)
+    publish_generate_job(pending_job)
     track_generate_job_task(
         job_id,
         asyncio.create_task(
@@ -1061,33 +1310,125 @@ async def edit_image_from_gallery(
 
 
 @app.get("/api/generate/jobs", response_model=list[GenerateJobStatus])
-async def list_generate_jobs():
-    active_jobs = [
-        job
-        for job in app.state.generate_jobs.values()
-        if job.get("status") in {"queued", "running"}
-    ]
-    active_jobs.sort(key=lambda job: job.get("created_at", ""), reverse=True)
-    return [GenerateJobStatus(**job) for job in active_jobs]
+async def list_generate_jobs(
+    include_finished: bool = Query(default=False),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    jobs = (
+        storage.list_generate_jobs(limit=limit)
+        if include_finished
+        else list_active_generate_jobs()
+    )
+    return [GenerateJobStatus(**job) for job in jobs]
+
+
+@app.get("/api/generate/jobs/events")
+async def stream_generate_jobs(request: Request):
+    queue: asyncio.Queue = asyncio.Queue(maxsize=20)
+    subscribers = get_jobs_subscribers()
+    subscribers.add(queue)
+    publish_queue(queue, {"event": "jobs", "data": list_active_generate_jobs()})
+
+    async def event_stream():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                yield serialize_sse_event(item["event"], item["data"])
+        finally:
+            subscribers.discard(queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/generate/{job_id}", response_model=GenerateJobStatus)
 async def get_generate_job(job_id: str):
-    job = app.state.generate_jobs.get(job_id)
+    job = app.state.generate_jobs.get(job_id) or storage.get_generate_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Generation job not found")
     return GenerateJobStatus(**job)
 
 
+@app.get("/api/generate/{job_id}/events")
+async def stream_generate_job(job_id: str, request: Request):
+    job = app.state.generate_jobs.get(job_id) or storage.get_generate_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Generation job not found")
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=20)
+    subscribers_by_job = get_job_subscribers()
+    subscribers = subscribers_by_job.setdefault(job_id, set())
+    subscribers.add(queue)
+    publish_queue(queue, {"event": "job", "data": job})
+
+    async def event_stream():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+
+                data = item["data"]
+                yield serialize_sse_event(item["event"], data)
+                if data.get("status") not in ACTIVE_JOB_STATUSES:
+                    break
+        finally:
+            subscribers.discard(queue)
+            if not subscribers:
+                subscribers_by_job.pop(job_id, None)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.delete("/api/generate/{job_id}", response_model=MessageResponse)
 async def cancel_generate_job(job_id: str):
-    job = app.state.generate_jobs.get(job_id)
+    job = app.state.generate_jobs.get(job_id) or storage.get_generate_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Generation job not found")
     if job.get("status") not in {"queued", "running"}:
         raise HTTPException(status_code=409, detail="Generation job already finished")
 
-    app.state.generate_jobs.pop(job_id, None)
+    cancel_message = (
+        "Image edit job cancelled"
+        if job.get("operation") == "edit"
+        else "Generation job cancelled"
+    )
+    store_generate_job(
+        job_id,
+        {
+            "status": "error",
+            "stage": "cancelled",
+            "message": cancel_message,
+            "operation": job.get("operation"),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "error": cancel_message,
+        },
+    )
+    trim_generate_jobs()
+
     task = get_generate_job_tasks().pop(job_id, None)
     if task and not task.done():
         task.cancel()
@@ -1151,6 +1492,7 @@ async def download_all_images():
 
     buf = io.BytesIO()
     used_names: set[str] = set()
+    exported_entries = []
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for entry in entries:
@@ -1167,7 +1509,14 @@ async def download_all_images():
                 counter += 1
             used_names.add(name)
 
-            zf.write(path, name)
+            zf.write(path, f"images/{name}")
+            exported_entries.append(entry.model_copy(update={"filename": name}))
+
+        metadata = build_gallery_export_metadata(exported_entries)
+        zf.writestr(
+            "metadata.json",
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+        )
 
     buf.seek(0)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -1178,6 +1527,25 @@ async def download_all_images():
             "Content-Disposition": f'attachment; filename="gpt-images-{timestamp}.zip"',
         },
     )
+
+
+@app.post("/api/import")
+async def import_gallery_archive(archive: UploadFile = File(...)):
+    archive_bytes = await archive.read()
+    if not archive_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded archive is empty")
+    if len(archive_bytes) > MAX_UPLOAD_BYTES * 20:
+        raise HTTPException(status_code=400, detail="Uploaded archive is too large")
+
+    imports = build_import_gallery_entries(archive_bytes)
+    if not imports:
+        raise HTTPException(status_code=400, detail="No importable images found")
+
+    imported_count = await asyncio.to_thread(storage.import_gallery_entries, imports)
+    return {
+        "status": "success",
+        "imported": imported_count,
+    }
 
 
 @app.delete("/api/gallery", response_model=MessageResponse)

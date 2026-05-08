@@ -31,8 +31,10 @@ import {
   deleteAllImages as deleteAllGalleryImages,
   deleteImage,
   downloadAll,
+  importArchive,
   loadGallery,
   openLightbox,
+  openImportArchivePicker,
 } from './gallery.js';
 import {
   clearCurrentImage,
@@ -84,6 +86,8 @@ function exposeGlobals() {
     handleEditImageSelected,
     handleOutputFormatChange,
     hideError,
+    importArchive,
+    openImportArchivePicker,
     openEditImagePicker,
     prepareGalleryImageForEdit,
     openLightbox,
