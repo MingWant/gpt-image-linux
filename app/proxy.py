@@ -8,6 +8,7 @@ from typing import Any
 from . import config
 from .models import EditRequest, GenerateRequest
 from . import storage
+from . import ssrf
 
 ProgressCallback = Callable[[str, str], None]
 
@@ -84,6 +85,7 @@ async def extract_image_bytes(
 
     if "url" in image_data and image_data["url"]:
         image_url = image_data["url"]
+        ssrf.validate_image_url(image_url)
         async with session.get(
             image_url, headers={"User-Agent": "opencode"}
         ) as img_resp:
@@ -189,6 +191,8 @@ async def call_image_generation_api(
 ) -> list[storage.GalleryEntry]:
     api_path = normalize_api_path(api_path)
     upstream_url = f"{api_url.rstrip('/')}{api_path}"
+
+    ssrf.validate_upstream_url(upstream_url, config.UPSTREAM_HOST_ALLOWLIST)
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -363,6 +367,8 @@ async def call_image_edit_api(
 ) -> list[storage.GalleryEntry]:
     api_path = "/v1/images/edits"
     upstream_url = f"{api_url.rstrip('/')}{api_path}"
+
+    ssrf.validate_upstream_url(upstream_url, config.UPSTREAM_HOST_ALLOWLIST)
 
     headers = {
         "Authorization": f"Bearer {api_key}",
