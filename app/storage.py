@@ -217,8 +217,6 @@ def _ensure_database():
                     ON gallery_entries(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_gallery_entries_filename
                     ON gallery_entries(filename);
-                CREATE INDEX IF NOT EXISTS idx_gallery_entries_favorite_created_at
-                    ON gallery_entries(favorite, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS generate_jobs (
                     job_id TEXT PRIMARY KEY,
@@ -272,12 +270,13 @@ def _migrate_gallery_schema(conn: sqlite3.Connection):
         conn.execute(
             "ALTER TABLE gallery_entries ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0"
         )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_gallery_entries_favorite_created_at
-            ON gallery_entries(favorite, created_at DESC)
-        """
-    )
+    if "favorite" in _table_columns(conn, "gallery_entries"):
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_gallery_entries_favorite_created_at
+                ON gallery_entries(favorite, created_at DESC)
+            """
+        )
 
 
 def _get_setting_value(conn: sqlite3.Connection, key: str) -> str | None:
