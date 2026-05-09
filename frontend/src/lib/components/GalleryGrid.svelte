@@ -3,6 +3,8 @@
   import type { GalleryFilters } from '$lib/stores/gallery';
   import { formatBytes, imageUrl } from '$lib/utils/format';
 
+  const apiBase = import.meta.env.BASE_URL.replace(/\/$/, '');
+
   export let gallery: GalleryResponse | null = null;
   export let filters: GalleryFilters;
   export let loading = false;
@@ -51,7 +53,7 @@
       <button type="button" class="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-800" on:click={() => importInput.click()}>
         Import
       </button>
-      <a href="/api/download-all" class="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-800">Export ZIP</a>
+      <a href={`${apiBase}/api/download-all`} class="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-800">Export ZIP</a>
       <button type="button" class="rounded-lg border border-red-500/40 px-3 py-2 text-xs text-red-300 hover:bg-red-500/10" on:click={onDeleteAll}>
         Delete All
       </button>
@@ -116,7 +118,7 @@
             <div class="flex flex-wrap gap-2">
               <button type="button" class="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800" on:click={() => onEdit(image)}>Edit</button>
               <button type="button" class="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800" on:click={() => onFavorite(image)}>{image.favorite ? 'Unfavorite' : 'Favorite'}</button>
-              <a href={`/api/download/${encodeURIComponent(image.filename)}`} class="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Download</a>
+              <a href={`${apiBase}/api/download/${encodeURIComponent(image.filename)}`} class="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Download</a>
               <button type="button" class="rounded-md border border-red-500/40 px-2 py-1 text-xs text-red-300 hover:bg-red-500/10" on:click={() => onDelete(image)}>Delete</button>
             </div>
           </div>

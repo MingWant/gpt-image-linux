@@ -140,8 +140,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="GPT Image Panel", lifespan=lifespan)
 FRONTEND_BUILD_DIR = config.PROJECT_ROOT / "frontend" / "build"
 LEGACY_STATIC_DIR = config.PROJECT_ROOT / "static"
+PANEL_PATH = config.PANEL_PATH
 if LEGACY_STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(LEGACY_STATIC_DIR)), name="static")
+    app.mount(
+        f"{PANEL_PATH}/static" if PANEL_PATH else "/static",
+        StaticFiles(directory=str(LEGACY_STATIC_DIR)),
+        name="static",
+    )
 
 MAX_GENERATE_JOBS = 100
 MAX_UPLOAD_BYTES = config.MAX_FILE_SIZE_MB * 1024 * 1024
@@ -176,7 +181,7 @@ IMAGE_UPLOAD_CONTENT_TYPES = {
     ".webp": "image/webp",
 }
 AUTH_EXEMPT_PATHS = {
-    "/",
+    PANEL_PATH or "/",
     "/api/access",
     "/api/access/status",
     "/api/version",
@@ -184,9 +189,47 @@ AUTH_EXEMPT_PATHS = {
     "/health",
 }
 AUTH_EXEMPT_PREFIXES = ("/static/", "/_app/")
-NO_CACHE_PATHS = {"/", "/static/index.html"}
-NO_CACHE_PREFIXES = ("/static/js/",)
+NO_CACHE_PATHS = {PANEL_PATH or "/", "/static/index.html"}
+NO_CACHE_PREFIXES = ("/static/js/", f"{PANEL_PATH}/static/js/")
 ACTIVE_JOB_STATUSES = {"queued", "running"}
+
+
+def build_panel_url(path: str = "") -> str:
+    normalized = str(path or "")
+    if not normalized:
+        return PANEL_PATH or "/"
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    return f"{PANEL_PATH}{normalized}"
+
+
+def is_frontend_asset_path(path: str) -> bool:
+    return path.startswith(AUTH_EXEMPT_PREFIXES) or bool(
+        PANEL_PATH
+        and (
+            path.startswith(f"{PANEL_PATH}/_app/")
+            or path.startswith(f"{PANEL_PATH}/static/")
+        )
+    )
+
+
+def should_set_secure_access_cookie(request: Request) -> bool:
+    cookie_secure = getattr(config, "ACCESS_COOKIE_SECURE", "auto")
+    if isinstance(cookie_secure, bool):
+        return cookie_secure
+
+    normalized = str(cookie_secure or "auto").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+
+    if config.TRUST_PROXY_HEADERS:
+        forwarded_proto = request.headers.get("x-forwarded-proto", "")
+        if forwarded_proto:
+            return forwarded_proto.split(",", 1)[0].strip().lower() == "https"
+
+    return request.url.scheme == "https"
 
 
 def apply_security_headers(response: Response) -> Response:
@@ -199,7 +242,20 @@ def apply_security_headers(response: Response) -> Response:
 
 @app.middleware("http")
 async def access_control_middleware(request: Request, call_next):
-    if request.url.path != "/health":
+    original_path = request.scope.get("path", "")
+    if PANEL_PATH:
+        if original_path.startswith(f"{PANEL_PATH}/api"):
+            request.scope["path"] = original_path[len(PANEL_PATH) :] or "/"
+        elif original_path == f"{PANEL_PATH}/health":
+            request.scope["path"] = "/health"
+        elif original_path == "/" or original_path.startswith("/api"):
+            return apply_security_headers(
+                JSONResponse(status_code=404, content={"detail": "Not found"})
+            )
+
+    path = request.scope.get("path", "")
+
+    if path != "/health":
         client_ip = auth.get_client_ip(request)
         if not auth.is_ip_allowed(client_ip):
             return apply_security_headers(
@@ -211,8 +267,8 @@ async def access_control_middleware(request: Request, call_next):
 
     if (
         config.ACCESS_KEY
-        and request.url.path not in AUTH_EXEMPT_PATHS
-        and not request.url.path.startswith(AUTH_EXEMPT_PREFIXES)
+        and path not in AUTH_EXEMPT_PATHS
+        and not is_frontend_asset_path(original_path)
     ):
         token = request.cookies.get(config.ACCESS_KEY_COOKIE_NAME)
         if not auth.verify_access_token(token):
@@ -225,7 +281,7 @@ async def access_control_middleware(request: Request, call_next):
 
     response = await call_next(request)
 
-    if request.url.path in NO_CACHE_PATHS or request.url.path.startswith(
+    if original_path in NO_CACHE_PATHS or path in NO_CACHE_PATHS or path.startswith(
         NO_CACHE_PREFIXES
     ):
         response.headers["Cache-Control"] = "no-cache"
@@ -858,7 +914,7 @@ async def favicon():
     return FileResponse(LEGACY_STATIC_DIR / "favicon.ico")
 
 
-@app.get("/")
+@app.get(PANEL_PATH or "/")
 async def index():
     frontend_index = FRONTEND_BUILD_DIR / "index.html"
     if frontend_index.exists():
@@ -938,7 +994,7 @@ async def unlock_access(req: AccessRequest, request: Request, response: Response
         expires=config.ACCESS_KEY_SESSION_MINUTES * 60,
         httponly=True,
         samesite="lax",
-        secure=config.ACCESS_COOKIE_SECURE,
+        secure=should_set_secure_access_cookie(request),
     )
     return AccessStatusResponse(
         authenticated=True,
@@ -1143,7 +1199,7 @@ async def run_generate_job(
             "message": "Image generation completed",
             "operation": "generation",
             "image_id": first_entry.id,
-            "image_url": f"/api/image/{first_entry.filename}",
+            "image_url": build_panel_url(f"/api/image/{first_entry.filename}"),
             "prompt": first_entry.prompt,
             "size": first_entry.size,
             "image_width": first_entry.image_width,
@@ -1281,7 +1337,7 @@ async def run_edit_job(
             "message": "Image edit completed",
             "operation": "edit",
             "image_id": first_entry.id,
-            "image_url": f"/api/image/{first_entry.filename}",
+            "image_url": build_panel_url(f"/api/image/{first_entry.filename}"),
             "prompt": first_entry.prompt,
             "size": first_entry.size,
             "image_width": first_entry.image_width,
@@ -1742,11 +1798,20 @@ async def delete_gallery_item(image_id: str):
 
 @app.get("/{full_path:path}", include_in_schema=False)
 async def frontend_asset_or_spa(full_path: str):
-    if full_path.startswith("api/") or full_path == "health":
+    if full_path.startswith("api/") or full_path == "health" or full_path == "favicon.ico":
         raise HTTPException(status_code=404, detail="Not found")
 
+    asset_path = full_path
+    panel_prefix = PANEL_PATH.lstrip("/")
+    if PANEL_PATH:
+        if full_path == panel_prefix:
+            return await index()
+        if not full_path.startswith(f"{panel_prefix}/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        asset_path = full_path[len(panel_prefix) + 1 :]
+
     if FRONTEND_BUILD_DIR.exists():
-        requested_path = (FRONTEND_BUILD_DIR / full_path).resolve()
+        requested_path = (FRONTEND_BUILD_DIR / asset_path).resolve()
         try:
             requested_path.relative_to(FRONTEND_BUILD_DIR.resolve())
         except ValueError:

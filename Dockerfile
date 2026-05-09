@@ -6,6 +6,8 @@ WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
+ARG PANEL_PATH=
+ENV PANEL_PATH=${PANEL_PATH}
 RUN npm run build
 
 FROM ${PYTHON_BASE_IMAGE} AS python-builder

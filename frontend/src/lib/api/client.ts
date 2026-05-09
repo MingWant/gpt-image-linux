@@ -2,6 +2,11 @@ type UnauthorizedHandler = (message?: string) => void;
 
 let unauthorizedHandler: UnauthorizedHandler | null = null;
 
+function withBasePath(url: string): string {
+  if (!url.startsWith('/')) return url;
+  return `${import.meta.env.BASE_URL.replace(/\/$/, '')}${url}`;
+}
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -21,7 +26,7 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null) {
 export async function apiFetch<T>(url: string, options: RequestInit = {}, action = 'request'): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(withBasePath(url), {
       credentials: 'same-origin',
       ...options,
       headers: {

@@ -211,6 +211,14 @@ cp .env.example .env
 docker-compose up -d --build --force-recreate
 ```
 
+To hide the panel behind a private URL path, set `PANEL_PATH` before building. Example:
+
+```bash
+PANEL_PATH=/my-secret-panel
+```
+
+Then rebuild and open `http://localhost:9090/my-secret-panel`. When `PANEL_PATH` is set, direct visits to `/` and unscoped `/api/*` return `404`; browser calls use `/my-secret-panel/api/*` and are routed internally.
+
 For Docker Hub timeout issues with Compose, set this in `.env` before building:
 
 ```bash
@@ -232,7 +240,7 @@ In another terminal:
 npm run frontend:dev
 ```
 
-Then open `http://localhost:5173`. The Vite dev server proxies `/api` and `/health` to FastAPI at `127.0.0.1:9090`, so browser requests stay same-origin in development.
+Then open `http://localhost:5173` or, when `PANEL_PATH` is set, `http://localhost:5173/<panel-path>`. The Vite dev server proxies panel-scoped `/api` and `/health` requests to FastAPI at `127.0.0.1:9090`, so browser requests stay same-origin in development.
 
 For a single-process local smoke test, build the frontend first and run FastAPI:
 
@@ -241,7 +249,7 @@ npm run frontend:build
 uvicorn backend.app.main:app --host 0.0.0.0 --port 9090 --reload
 ```
 
-Then open `http://localhost:9090`.
+Then open `http://localhost:9090` or `http://localhost:9090/<panel-path>` when `PANEL_PATH` is set.
 
 If you want to run without access auth during local dev, set `ALLOW_UNAUTHENTICATED=true`.
 
@@ -313,8 +321,10 @@ The panel supports these upstream paths:
 | `DEFAULT_RESPONSES_MODEL` | `gpt-5.4` | Top-level model used when calling `/v1/responses` |
 | `APP_VERSION` | `VERSION` file | Override the app version shown in the UI and returned by `/api/version` |
 | `GITHUB_REPO` | `Z1rconium/gpt-image-linux` | GitHub `owner/repo` used for release update detection; set empty to disable latest-version checks |
+| `PANEL_PATH` | empty | Optional private URL prefix for the panel, for example `/my-secret-panel`; requires rebuilding the frontend/Docker image |
 | `ACCESS_KEY` | empty | Required by default; all non-health routes require unlock when set |
 | `ALLOW_UNAUTHENTICATED` | `false` | Set `true` to explicitly allow startup without `ACCESS_KEY` |
+| `ACCESS_COOKIE_SECURE` | `auto` | Access session cookie security. `auto` uses `Secure` only for HTTPS requests; set `false` for plain HTTP IP/port NAT access, or `true` for HTTPS-only deployments |
 | `IP_ALLOWLIST` | empty | Comma-separated allowed IPs/CIDRs |
 | `TRUST_PROXY_HEADERS` | `false` | Read `X-Forwarded-For` or `X-Real-IP` from a trusted reverse proxy |
 | `MAX_FILE_SIZE_MB` | `50` | Max image size in MB |

@@ -8,8 +8,13 @@ export type EventHandlers<T> = {
   onError?: () => void;
 };
 
+function withBasePath(url: string): string {
+  if (!url.startsWith('/')) return url;
+  return `${import.meta.env.BASE_URL.replace(/\/$/, '')}${url}`;
+}
+
 export function openJsonEventSource<T>(url: string, handlers: EventHandlers<T>): EventSource {
-  const source = new EventSource(url);
+  const source = new EventSource(withBasePath(url));
 
   source.addEventListener('job', (event) => {
     handlers.onEvent({ event: 'job', data: JSON.parse((event as MessageEvent).data) as T });

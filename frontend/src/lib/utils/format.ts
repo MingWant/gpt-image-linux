@@ -1,11 +1,15 @@
 import type { GenerateJobStatus } from '$lib/api/types';
 
+function withBasePath(path: string) {
+  return `${import.meta.env.BASE_URL.replace(/\/$/, '')}${path}`;
+}
+
 export function imageUrl(filename: string) {
-  return `/api/image/${encodeURIComponent(filename)}`;
+  return withBasePath(`/api/image/${encodeURIComponent(filename)}`);
 }
 
 export function downloadUrl(filename: string) {
-  return `/api/download/${encodeURIComponent(filename)}`;
+  return withBasePath(`/api/download/${encodeURIComponent(filename)}`);
 }
 
 export function filenameFromImageUrl(url: string) {

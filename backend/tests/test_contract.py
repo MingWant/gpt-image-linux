@@ -35,6 +35,7 @@ def _configure_runtime(tmp_path: Path, *, access_key: str = "", allow_unauthenti
     config.DEFAULT_API_KEY = "default-key"
     config.DEFAULT_API_PATH = "/v1/images/generations"
     config.DEFAULT_RESPONSES_MODEL = "gpt-5.4"
+    config.PANEL_PATH = ""
     config.ACCESS_KEY = access_key
     config.ALLOW_UNAUTHENTICATED = allow_unauthenticated
     config.ACCESS_KEY_COOKIE_NAME = "gpt_image_access"
@@ -196,6 +197,57 @@ def test_frontend_index_uses_csp_nonce(tmp_path, monkeypatch):
     assert "'unsafe-inline'" not in csp.split("script-src-elem", 1)[1].split(";", 1)[0]
 
 
+def test_panel_path_hides_root_and_serves_panel_assets(tmp_path, monkeypatch):
+    _configure_runtime(tmp_path, access_key="secret", allow_unauthenticated=False)
+    config.PANEL_PATH = "/secret-panel"
+    contract_app.PANEL_PATH = config.PANEL_PATH
+    contract_app.AUTH_EXEMPT_PATHS.discard("/")
+    contract_app.AUTH_EXEMPT_PATHS.add(config.PANEL_PATH)
+    contract_app.NO_CACHE_PATHS.discard("/")
+    contract_app.NO_CACHE_PATHS.add(config.PANEL_PATH)
+
+    build_dir = tmp_path / "frontend_build"
+    asset_path = build_dir / "_app" / "immutable" / "entry" / "app.js"
+    asset_path.parent.mkdir(parents=True)
+    (build_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <script>
+          import('/secret-panel/_app/immutable/entry/app.js');
+        </script>
+        """,
+        encoding="utf-8",
+    )
+    asset_path.write_text("console.log('panel');", encoding="utf-8")
+    monkeypatch.setattr(contract_app, "FRONTEND_BUILD_DIR", build_dir)
+
+    try:
+        with TestClient(backend_main.app, raise_server_exceptions=False) as client:
+            root = client.get("/")
+            panel = client.get("/secret-panel")
+            asset = client.get("/secret-panel/_app/immutable/entry/app.js")
+            old_asset = client.get("/_app/immutable/entry/app.js")
+            api = client.get("/api/settings")
+            scoped_api = client.get("/secret-panel/api/settings")
+            scoped_health = client.get("/secret-panel/health")
+
+        assert root.status_code == 404
+        assert panel.status_code == 200
+        assert asset.status_code == 200
+        assert "console.log('panel')" in asset.text
+        assert old_asset.status_code == 404
+        assert api.status_code == 404
+        assert scoped_api.status_code == 401
+        assert scoped_health.status_code == 200
+    finally:
+        contract_app.PANEL_PATH = ""
+        contract_app.AUTH_EXEMPT_PATHS.discard(config.PANEL_PATH)
+        contract_app.AUTH_EXEMPT_PATHS.add("/")
+        contract_app.NO_CACHE_PATHS.discard(config.PANEL_PATH)
+        contract_app.NO_CACHE_PATHS.add("/")
+        config.PANEL_PATH = ""
+
+
 def test_access_cookie_and_status(tmp_path):
     _configure_runtime(tmp_path, access_key="secret", allow_unauthenticated=False)
     with TestClient(backend_main.app) as client:
@@ -220,6 +272,36 @@ def test_access_cookie_and_status(tmp_path):
         assert status.status_code == 200
         assert status.json()["authenticated"] is True
         assert status.json()["expires_at"]
+
+
+def test_access_cookie_secure_auto_respects_request_scheme(tmp_path):
+    _configure_runtime(tmp_path, access_key="secret", allow_unauthenticated=False)
+    config.ACCESS_COOKIE_SECURE = "auto"
+    with TestClient(backend_main.app) as client:
+        http_ok = client.post("/api/access", json={"access_key": "secret"})
+        assert http_ok.status_code == 200
+        assert "Secure" not in http_ok.headers["set-cookie"]
+
+    _configure_runtime(tmp_path, access_key="secret", allow_unauthenticated=False)
+    config.ACCESS_COOKIE_SECURE = "auto"
+    with TestClient(backend_main.app, base_url="https://testserver") as client:
+        https_ok = client.post("/api/access", json={"access_key": "secret"})
+        assert https_ok.status_code == 200
+        assert "Secure" in https_ok.headers["set-cookie"]
+
+
+def test_access_cookie_secure_auto_respects_trusted_proxy_proto(tmp_path):
+    _configure_runtime(tmp_path, access_key="secret", allow_unauthenticated=False)
+    config.ACCESS_COOKIE_SECURE = "auto"
+    config.TRUST_PROXY_HEADERS = True
+    with TestClient(backend_main.app) as client:
+        ok = client.post(
+            "/api/access",
+            json={"access_key": "secret"},
+            headers={"x-forwarded-proto": "https"},
+        )
+        assert ok.status_code == 200
+        assert "Secure" in ok.headers["set-cookie"]
 
 
 def test_frontend_build_assets_are_available_before_access_unlock(tmp_path, monkeypatch):
