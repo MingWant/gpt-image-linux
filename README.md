@@ -328,6 +328,10 @@ The panel supports these upstream paths:
 | `IP_ALLOWLIST` | empty | Comma-separated allowed IPs/CIDRs |
 | `TRUST_PROXY_HEADERS` | `false` | Read `X-Forwarded-For` or `X-Real-IP` from a trusted reverse proxy |
 | `MAX_FILE_SIZE_MB` | `50` | Max image size in MB |
+| `UPSTREAM_USER_AGENT` | browser-like UA | Optional upstream `User-Agent` override for API providers behind strict WAF/CDN rules |
+| `UPSTREAM_ORIGIN` | API URL origin | Optional upstream `Origin` header override |
+| `UPSTREAM_REFERER` | API URL origin | Optional upstream `Referer` header override |
+| `UPSTREAM_EXTRA_HEADERS` | browser-like client hints | Optional extra upstream headers as JSON, for example `{"sec-ch-ua":"\\"Google Chrome\\";v=\\"145\\", \\"Not:A-Brand\\";v=\\"8\\", \\"Chromium\\";v=\\"145\\"","sec-ch-ua-mobile":"?0"}` |
 | `IMAGES_DIR` | `./images` | Directory for saved images |
 | `DATA_DIR` | `./data` | Directory for SQLite runtime data |
 | `DATABASE_FILE` | `./data/app.sqlite3` | SQLite database for gallery metadata and API presets |

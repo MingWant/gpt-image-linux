@@ -4,6 +4,7 @@ import json
 import copy
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlparse
 
 from ..core import settings as config
 from ..core import validators as ssrf
@@ -27,9 +28,88 @@ UPSTREAM_TIMEOUT = aiohttp.ClientTimeout(
     sock_read=600,
 )
 
+DEFAULT_UPSTREAM_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/145.0.0.0 Safari/537.36"
+)
+DEFAULT_SEC_CH_UA = (
+    '"Google Chrome";v="145", '
+    '"Not:A-Brand";v="8", '
+    '"Chromium";v="145"'
+)
+PROTECTED_EXTRA_HEADERS = {"authorization", "content-length", "host"}
+
 
 def get_output_format_info(output_format: str) -> dict[str, str]:
     return OUTPUT_FORMATS.get(output_format, OUTPUT_FORMATS["png"])
+
+
+def parse_extra_headers(raw_headers: str) -> dict[str, str]:
+    raw_headers = (raw_headers or "").strip()
+    if not raw_headers:
+        return {}
+
+    try:
+        parsed = json.loads(raw_headers)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, dict):
+        return {
+            str(key).strip(): str(value).strip()
+            for key, value in parsed.items()
+            if str(key).strip() and value is not None
+        }
+
+    headers: dict[str, str] = {}
+    for item in raw_headers.replace("\n", ";").split(";"):
+        if not item.strip() or ":" not in item:
+            continue
+        key, value = item.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            headers[key] = value
+    return headers
+
+
+def build_upstream_headers(
+    api_key: str,
+    *,
+    api_url: str = "",
+    content_type: str | None = None,
+) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "User-Agent": config.UPSTREAM_USER_AGENT or DEFAULT_UPSTREAM_USER_AGENT,
+        "sec-ch-ua": DEFAULT_SEC_CH_UA,
+        "sec-ch-ua-mobile": "?0",
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+
+    parsed_api_url = urlparse(api_url)
+    default_origin = (
+        f"{parsed_api_url.scheme}://{parsed_api_url.netloc}"
+        if parsed_api_url.scheme and parsed_api_url.netloc
+        else ""
+    )
+    origin = config.UPSTREAM_ORIGIN or default_origin
+    referer = config.UPSTREAM_REFERER or origin
+    if origin:
+        headers["Origin"] = origin
+    if referer:
+        headers["Referer"] = referer
+
+    for key, value in parse_extra_headers(config.UPSTREAM_EXTRA_HEADERS).items():
+        if key.lower() in PROTECTED_EXTRA_HEADERS:
+            continue
+        headers[key] = value
+
+    return headers
 
 
 def extract_response_image_result(value: Any) -> dict[str, str] | None:
@@ -87,7 +167,8 @@ async def extract_image_bytes(
         image_url = image_data["url"]
         ssrf.validate_image_url(image_url)
         async with session.get(
-            image_url, headers={"User-Agent": "opencode"}
+            image_url,
+            headers={"User-Agent": config.UPSTREAM_USER_AGENT or DEFAULT_UPSTREAM_USER_AGENT},
         ) as img_resp:
             if img_resp.status != 200:
                 raise Exception(
@@ -153,7 +234,25 @@ def get_upstream_error_message(
             return error_body.get("error", {}).get("message", response_text)
         except Exception:
             return response_text
+    if "<!doctype html" in response_text.lower() or "<html" in response_text.lower():
+        return (
+            f"HTTP {status}: upstream returned an HTML error page instead of JSON. "
+            "Please check that API URL is the real API base URL, not a website/CDN/proxy page."
+        )
     return f"HTTP {status}: {response_text[:200]}"
+
+
+def validate_api_base_url(api_url: str) -> None:
+    parsed = urlparse(api_url)
+    if parsed.path.rstrip("/") in {
+        "/v1/images/generations",
+        "/v1/images/edits",
+        "/v1/responses",
+    }:
+        raise ValueError(
+            "API URL should be the base URL only, for example https://api.openai.com. "
+            "Select the endpoint in API path instead."
+        )
 
 
 def raise_upstream_error(
@@ -190,15 +289,16 @@ async def call_image_generation_api(
     progress: ProgressCallback | None = None,
 ) -> list[storage.GalleryEntry]:
     api_path = normalize_api_path(api_path)
+    validate_api_base_url(api_url)
     upstream_url = f"{api_url.rstrip('/')}{api_path}"
 
     ssrf.validate_upstream_url(upstream_url, config.UPSTREAM_HOST_ALLOWLIST)
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "User-Agent": "opencode",
-    }
+    headers = build_upstream_headers(
+        api_key,
+        api_url=api_url,
+        content_type="application/json",
+    )
 
     if api_path == "/v1/responses":
         if progress:
@@ -366,14 +466,12 @@ async def call_image_edit_api(
     progress: ProgressCallback | None = None,
 ) -> list[storage.GalleryEntry]:
     api_path = "/v1/images/edits"
+    validate_api_base_url(api_url)
     upstream_url = f"{api_url.rstrip('/')}{api_path}"
 
     ssrf.validate_upstream_url(upstream_url, config.UPSTREAM_HOST_ALLOWLIST)
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": "opencode",
-    }
+    headers = build_upstream_headers(api_key, api_url=api_url)
     format_info = get_output_format_info(payload.output_format)
     gallery_metadata = {
         "model": payload.model,

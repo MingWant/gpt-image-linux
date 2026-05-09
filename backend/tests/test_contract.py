@@ -46,6 +46,10 @@ def _configure_runtime(tmp_path: Path, *, access_key: str = "", allow_unauthenti
     config.IP_ALLOWLIST = ""
     config.TRUST_PROXY_HEADERS = False
     config.UPSTREAM_HOST_ALLOWLIST = ""
+    config.UPSTREAM_USER_AGENT = ""
+    config.UPSTREAM_ORIGIN = ""
+    config.UPSTREAM_REFERER = ""
+    config.UPSTREAM_EXTRA_HEADERS = ""
     config.WEBHOOK_HOST_ALLOWLIST = ""
     config.WEBHOOK_SIGNING_SECRET = "webhook-secret"
     config.WEBHOOK_TIMEOUT_SECONDS = 1
@@ -302,6 +306,40 @@ def test_access_cookie_secure_auto_respects_trusted_proxy_proto(tmp_path):
         )
         assert ok.status_code == 200
         assert "Secure" in ok.headers["set-cookie"]
+
+
+def test_settings_rejects_full_endpoint_api_url(tmp_path):
+    _configure_runtime(tmp_path)
+    with TestClient(backend_main.app) as client:
+        resp = client.post(
+            "/api/settings",
+            json={
+                "api_url": "https://api.example.com/v1/images/generations",
+                "api_key": "secret-key",
+                "api_path": "/v1/images/generations",
+            },
+        )
+
+    assert resp.status_code == 422
+    assert "API URL should be the base URL only" in resp.json()["detail"]
+
+
+def test_upstream_headers_include_browser_like_defaults_and_extra_headers(tmp_path):
+    _configure_runtime(tmp_path)
+    config.UPSTREAM_EXTRA_HEADERS = '{"sec-ch-ua":"\\"Google Chrome\\";v=\\"145\\""}'
+
+    headers = backend_main.proxy.build_upstream_headers(
+        "test-key",
+        api_url="https://api.example.com",
+        content_type="application/json",
+    )
+
+    assert headers["Authorization"] == "Bearer test-key"
+    assert headers["Accept"] == "application/json, text/plain, */*"
+    assert "Mozilla/5.0" in headers["User-Agent"]
+    assert headers["Origin"] == "https://api.example.com"
+    assert headers["Referer"] == "https://api.example.com"
+    assert headers["sec-ch-ua"] == '"Google Chrome";v="145"'
 
 
 def test_frontend_build_assets_are_available_before_access_unlock(tmp_path, monkeypatch):

@@ -126,7 +126,7 @@ async def lifespan(app: FastAPI):
     app.state.generate_job_subscribers = {}
     app.state.generate_jobs_subscribers = set()
     app.state.generate_job_webhooks = {}
-    app.state.access_failures: dict[str, tuple[int, float]] = {}
+    app.state.access_failures = {}
     try:
         yield
     finally:
@@ -1004,6 +1004,11 @@ async def unlock_access(req: AccessRequest, request: Request, response: Response
 
 @app.post("/api/settings", response_model=SettingsResponse)
 async def update_settings(req: SettingsRequest):
+    try:
+        proxy.validate_api_base_url(req.api_url.rstrip("/"))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
     preset = (
         get_preset_by_id(req.active_preset_id)
         if req.active_preset_id

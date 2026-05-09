@@ -8,7 +8,7 @@ services:
         PANEL_PATH: ${PANEL_PATH:-}
     container_name: gpt-image-panel
     ports:
-      - "127.0.0.1:9090:9090"
+      - "0.0.0.0:17600:9090"
     volumes:
       - ./images:/app/images
       - ./data:/app/data
@@ -26,6 +26,10 @@ services:
       - IP_ALLOWLIST=${IP_ALLOWLIST:-}
       - TRUST_PROXY_HEADERS=${TRUST_PROXY_HEADERS:-false}
       - UPSTREAM_HOST_ALLOWLIST=${UPSTREAM_HOST_ALLOWLIST:-}
+      - UPSTREAM_USER_AGENT=${UPSTREAM_USER_AGENT:-}
+      - UPSTREAM_ORIGIN=${UPSTREAM_ORIGIN:-}
+      - UPSTREAM_REFERER=${UPSTREAM_REFERER:-}
+      - UPSTREAM_EXTRA_HEADERS=${UPSTREAM_EXTRA_HEADERS:-}
       - WEBHOOK_HOST_ALLOWLIST=${WEBHOOK_HOST_ALLOWLIST:-}
       - WEBHOOK_SIGNING_SECRET=${WEBHOOK_SIGNING_SECRET:-}
       - WEBHOOK_TIMEOUT_SECONDS=${WEBHOOK_TIMEOUT_SECONDS:-5}
