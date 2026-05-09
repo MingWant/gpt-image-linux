@@ -1,6 +1,7 @@
 # GPT Image Panel
 
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.109-009688?logo=fastapi)
+![SvelteKit](https://img.shields.io/badge/SvelteKit-2-FF3E00?logo=svelte)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python)
 ![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite)
 ![Docker](https://img.shields.io/badge/Docker-24.0+-2496ED?logo=docker)
@@ -15,15 +16,16 @@ GPT Image Panel is a lightweight FastAPI web UI for image generation and image e
 
 Key characteristics:
 
-- single-page frontend shell in `static/index.html` with ES modules under `static/js/`
-- FastAPI backend defined primarily in `app/main.py`
+- SvelteKit + TypeScript frontend in `frontend/`
+- FastAPI backend in `backend/app/`; root `app/` remains as a compatibility import wrapper
+- public API paths, methods, status codes, SSE event names, cookies, and response shapes are contract-tested and kept stable
 - API presets persisted to SQLite at `data/app.sqlite3`
 - background image-generation jobs executed with `asyncio.create_task`
 - local image storage under `images/`
 - gallery metadata stored in SQLite at `data/app.sqlite3`
 - legacy `data/gallery.json` and `data/settings.json` are imported once on startup when the database is empty
-- Docker and Docker Compose deployment support
-- no test suite is currently present in the repository
+- Docker and Docker Compose deployment support with frontend static build baked into the image
+- pytest API contract tests under `backend/tests/`
 
 ## Features
 
@@ -44,30 +46,37 @@ Key characteristics:
 
 ### Backend
 
-The backend is a FastAPI application defined primarily in `app/main.py`.
+The backend is a FastAPI application under `backend/app/`.
 
 Responsibilities are split into a few modules:
 
-- `app/main.py` — application bootstrap, access control, routes, and background job orchestration
-- `app/models.py` — request and response models
-- `app/proxy.py` — upstream API client and image decoding
-- `app/storage.py` — image saving, gallery persistence, directory checks
-- `app/config.py` — environment-based configuration
+- `backend/app/main.py` — thin ASGI entrypoint
+- `backend/app/api/contract_app.py` — frozen public API surface and current route wiring
+- `backend/app/schemas/` — Pydantic request/response DTOs
+- `backend/app/repositories/` — SQLite, gallery, image file, settings, and job persistence
+- `backend/app/integrations/` — upstream GPT-compatible image API client
+- `backend/app/core/` — settings, access tokens, IP allowlist, proxy headers, and URL validators
+- `backend/app/services/` — webhook signing, retry, and async delivery
+
+The compatibility `app/` package re-exports the new backend modules so old imports like `uvicorn app.main:app` still work in local environments where the full repository is present.
 
 ### Frontend
 
-The frontend is a single-page application with the HTML shell in `static/index.html` and vanilla ES modules in `static/js/`.
+The frontend is a SvelteKit static application in `frontend/`.
 
 It uses:
 
-- local Tailwind CSS build output (`static/css/tailwind.css`)
-- vanilla ES modules split across API access, settings, size dialog, jobs, gallery/lightbox, and app bootstrap code
+- Tailwind CSS
+- `src/lib/api/client.ts` for same-origin fetch calls to existing `/api/*` endpoints
+- `src/lib/api/events.ts` for SSE wrappers
+- stores split across access, settings, gallery, jobs, preview, and UI state
+- components for access, header, settings drawer, job history drawer, preview, gallery, lightbox, and size selection
 
-Frontend CSS build:
+Frontend build:
 
 ```bash
-npm install
-npm run build:css
+npm --prefix frontend install
+npm --prefix frontend run build
 ```
 
 ### Storage
@@ -111,8 +120,9 @@ Runtime persistent storage is minimal:
 - aiohttp
 - SQLite
 - Pydantic v2
-- Pillow
-- Tailwind CSS (local build with Tailwind CLI)
+- SvelteKit
+- TypeScript
+- Tailwind CSS
 
 ## Project structure
 
@@ -130,25 +140,32 @@ package-lock.json
 tailwind.config.js
 app/
   __init__.py
-  config.py
-  main.py
-  models.py
-  proxy.py
-  storage.py
-static/
-  css/
-    input.css
-    tailwind.css
-  index.html
-  js/
-    access.js
-    api.js
-    app.js
-    gallery.js
-    jobs.js
-    settings.js
-    size-dialog.js
-    ui.js
+  main.py              # compatibility wrapper
+backend/
+  requirements.txt
+  requirements-dev.txt
+  app/
+    main.py
+    api/
+    core/
+    schemas/
+    repositories/
+    integrations/
+    services/
+  tests/
+frontend/
+  package.json
+  svelte.config.js
+  vite.config.ts
+  src/
+    routes/
+    lib/
+      api/
+      stores/
+      components/
+      utils/
+deploy/
+  nginx.conf
 images/
 data/
 ```
@@ -181,6 +198,7 @@ If Docker Hub times out while resolving `python:3.11-slim`, use a reachable mirr
 ```bash
 docker build \
   --build-arg PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim \
+  --build-arg NODE_BASE_IMAGE=docker.m.daocloud.io/library/node:24-alpine \
   -t gpt-image-panel .
 ```
 
@@ -197,13 +215,30 @@ For Docker Hub timeout issues with Compose, set this in `.env` before building:
 
 ```bash
 PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim
+NODE_BASE_IMAGE=docker.m.daocloud.io/library/node:24-alpine
 ```
 
 ### Local development
 
 ```bash
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 9090 --reload
+pip install -r backend/requirements-dev.txt
+npm --prefix frontend install
+npm run backend:dev
+```
+
+In another terminal:
+
+```bash
+npm run frontend:dev
+```
+
+Then open `http://localhost:5173`. The Vite dev server proxies `/api` and `/health` to FastAPI at `127.0.0.1:9090`, so browser requests stay same-origin in development.
+
+For a single-process local smoke test, build the frontend first and run FastAPI:
+
+```bash
+npm run frontend:build
+uvicorn backend.app.main:app --host 0.0.0.0 --port 9090 --reload
 ```
 
 Then open `http://localhost:9090`.
@@ -287,6 +322,7 @@ The panel supports these upstream paths:
 | `DATA_DIR` | `./data` | Directory for SQLite runtime data |
 | `DATABASE_FILE` | `./data/app.sqlite3` | SQLite database for gallery metadata and API presets |
 | `PYTHON_BASE_IMAGE` | `python:3.11-slim` | Docker build base image; override when Docker Hub is slow or blocked |
+| `NODE_BASE_IMAGE` | `node:24-alpine` | Docker frontend build base image; override when Docker Hub is slow or blocked |
 | `WEBHOOK_SIGNING_SECRET` | empty | Required when `webhook_url` is used; used to sign webhook payloads (`X-Webhook-Signature`) |
 | `WEBHOOK_HOST_ALLOWLIST` | empty | Optional comma-separated webhook hostname allowlist |
 | `WEBHOOK_TIMEOUT_SECONDS` | `5` | Webhook delivery timeout per attempt (seconds) |
@@ -344,7 +380,13 @@ The panel supports these upstream paths:
 
 ## Testing
 
-There is no test suite in the repository.
+```bash
+npm run frontend:check
+npm run frontend:build
+python3 -m pytest backend/tests/test_contract.py -q
+```
+
+The contract tests cover the frozen public API surface, including access cookies, settings, generation/edit job creation, SSE response framing, gallery import/export, downloads, validation errors, and 500 error shape.
 
 ## Contributing
 
@@ -354,10 +396,10 @@ Helpful guidelines:
 
 - keep backend changes simple and explicit
 - update `VERSION` when a user-visible change or release-worthy fix warrants a new `vMAJOR.MINOR.PATCH` version
-- use FastAPI response models from `app/models.py` where applicable
-- keep persistent storage operations centralized in `app/storage.py`
-- keep upstream API interaction centralized in `app/proxy.py`
-- keep the frontend build flow minimal (currently only Tailwind CSS compilation)
+- use FastAPI response models from `backend/app/schemas/` where applicable
+- keep persistent storage operations centralized in `backend/app/repositories/`
+- keep upstream API interaction centralized in `backend/app/integrations/`
+- keep browser requests on same-origin `/api/*` paths; do not introduce direct cross-origin frontend-to-backend calls
 - avoid storing real API keys in repository files
 - do not commit generated images or runtime gallery metadata unless explicitly requested
 - preserve the existing async generation flow and SSE progress model unless the change explicitly requires altering job lifecycle behavior
@@ -389,15 +431,16 @@ GPT Image Panel 是一个轻量级 FastAPI Web 界面，用于图像生成和图
 
 主要特点：
 
-- 单页前端壳位于 `static/index.html`，ES modules 位于 `static/js/`
-- FastAPI 后端主要定义在 `app/main.py`
+- SvelteKit + TypeScript 前端位于 `frontend/`
+- FastAPI 后端位于 `backend/app/`；根目录 `app/` 保留为兼容导入 wrapper
+- 公共 API 路径、方法、状态码、SSE 事件名、cookie 和响应结构通过契约测试冻结
 - API 预设持久化保存在 SQLite：`data/app.sqlite3`
 - 图像生成任务通过 `asyncio.create_task` 异步执行
 - 图片保存在 `images/`
 - Gallery 元数据保存在 SQLite：`data/app.sqlite3`
 - 旧的 `data/gallery.json` 和 `data/settings.json` 会在数据库为空时于启动阶段导入一次
-- 支持 Docker 和 Docker Compose 部署
-- 仓库目前没有测试套件
+- Docker 镜像会构建并内置 SvelteKit 静态前端
+- pytest API 契约测试位于 `backend/tests/`
 
 ## 功能
 
@@ -417,30 +460,37 @@ GPT Image Panel 是一个轻量级 FastAPI Web 界面，用于图像生成和图
 
 ### 后端
 
-后端是 FastAPI 应用，主要定义在 `app/main.py`。
+后端是 FastAPI 应用，位于 `backend/app/`。
 
 功能拆分为以下模块：
 
-- `app/main.py` — 应用启动、访问控制、路由、后台任务管理
-- `app/models.py` — 请求与响应模型
-- `app/proxy.py` — 上游 API 调用与图片解码
-- `app/storage.py` — 图片存储、Gallery 持久化、目录检查
-- `app/config.py` — 环境变量配置
+- `backend/app/main.py` — 很薄的 ASGI 入口
+- `backend/app/api/contract_app.py` — 冻结的公共 API 表面和当前路由组装
+- `backend/app/schemas/` — Pydantic 请求/响应 DTO
+- `backend/app/repositories/` — SQLite、Gallery、图片文件、settings 和 jobs 持久化
+- `backend/app/integrations/` — 上游 GPT 兼容图片 API 调用
+- `backend/app/core/` — settings、访问 token、IP allowlist、proxy header 和 URL 校验
+- `backend/app/services/` — webhook 签名、重试和异步投递
+
+根目录 `app/` 兼容包会 re-export 新后端模块，所以在完整仓库环境里旧命令 `uvicorn app.main:app` 仍可运行。
 
 ### 前端
 
-前端是单页应用，HTML 壳位于 `static/index.html`，原生 ES modules 位于 `static/js/`。
+前端是 SvelteKit 静态应用，位于 `frontend/`。
 
 使用技术：
 
-- 本地构建的 Tailwind CSS（`static/css/tailwind.css`）
-- 原生 ES modules，拆分为 API 访问、设置、尺寸弹窗、任务、Gallery/Lightbox 和应用启动逻辑
+- Tailwind CSS
+- `src/lib/api/client.ts` 封装同源 `/api/*` fetch
+- `src/lib/api/events.ts` 封装 SSE
+- stores 拆分为 access、settings、gallery、jobs、preview 和 UI
+- 组件拆分为 access、header、settings drawer、job history drawer、preview、gallery、lightbox 和 size dialog
 
-前端 CSS 构建命令：
+前端构建命令：
 
 ```bash
-npm install
-npm run build:css
+npm --prefix frontend install
+npm --prefix frontend run build
 ```
 
 ### 存储
@@ -484,8 +534,9 @@ npm run build:css
 - aiohttp
 - SQLite
 - Pydantic v2
-- Pillow
-- Tailwind CSS（本地通过 Tailwind CLI 构建）
+- SvelteKit
+- TypeScript
+- Tailwind CSS
 
 ## 项目结构
 
@@ -503,25 +554,32 @@ package-lock.json
 tailwind.config.js
 app/
   __init__.py
-  config.py
-  main.py
-  models.py
-  proxy.py
-  storage.py
-static/
-  css/
-    input.css
-    tailwind.css
-  index.html
-  js/
-    access.js
-    api.js
-    app.js
-    gallery.js
-    jobs.js
-    settings.js
-    size-dialog.js
-    ui.js
+  main.py              # 兼容 wrapper
+backend/
+  requirements.txt
+  requirements-dev.txt
+  app/
+    main.py
+    api/
+    core/
+    schemas/
+    repositories/
+    integrations/
+    services/
+  tests/
+frontend/
+  package.json
+  svelte.config.js
+  vite.config.ts
+  src/
+    routes/
+    lib/
+      api/
+      stores/
+      components/
+      utils/
+deploy/
+  nginx.conf
 images/
 data/
 ```
@@ -554,6 +612,7 @@ docker run -d --name gpt-image-panel \
 ```bash
 docker build \
   --build-arg PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim \
+  --build-arg NODE_BASE_IMAGE=docker.m.daocloud.io/library/node:24-alpine \
   -t gpt-image-panel .
 ```
 
@@ -570,13 +629,30 @@ docker-compose up -d --build --force-recreate
 
 ```bash
 PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim
+NODE_BASE_IMAGE=docker.m.daocloud.io/library/node:24-alpine
 ```
 
 ### 本地开发
 
 ```bash
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 9090 --reload
+pip install -r backend/requirements-dev.txt
+npm --prefix frontend install
+npm run backend:dev
+```
+
+另开一个终端：
+
+```bash
+npm run frontend:dev
+```
+
+然后打开 `http://localhost:5173`。Vite dev server 会把 `/api` 和 `/health` 代理到 `127.0.0.1:9090`，浏览器侧仍然是同源路径。
+
+如果要单进程 smoke test：
+
+```bash
+npm run frontend:build
+uvicorn backend.app.main:app --host 0.0.0.0 --port 9090 --reload
 ```
 
 然后打开 `http://localhost:9090`。
@@ -658,6 +734,7 @@ curl http://localhost:9090/health
 | `DATA_DIR` | `./data` | SQLite 运行时数据目录 |
 | `DATABASE_FILE` | `./data/app.sqlite3` | 保存 Gallery 元数据和 API 预设的 SQLite 数据库 |
 | `PYTHON_BASE_IMAGE` | `python:3.11-slim` | Docker 构建基础镜像；Docker Hub 慢或不可访问时可覆盖 |
+| `NODE_BASE_IMAGE` | `node:24-alpine` | Docker 前端构建基础镜像；Docker Hub 慢或不可访问时可覆盖 |
 
 ## 接口列表
 
@@ -706,7 +783,13 @@ curl http://localhost:9090/health
 
 ## 测试
 
-仓库目前没有测试套件。
+```bash
+npm run frontend:check
+npm run frontend:build
+python3 -m pytest backend/tests/test_contract.py -q
+```
+
+契约测试覆盖冻结的公共 API 表面，包括访问 cookie、settings、generation/edit 任务创建、SSE 响应 framing、Gallery import/export、下载、422 校验错误和 500 错误形状。
 
 ## 贡献
 
@@ -715,10 +798,10 @@ curl http://localhost:9090/health
 建议遵循以下原则：
 
 - 后端修改尽量保持简单和明确
-- 尽量使用 `app/models.py` 中的 FastAPI 响应模型
-- 持久化存储操作集中在 `app/storage.py`
-- 上游 API 调用集中在 `app/proxy.py`
-- 前端构建流程保持最小化（当前仅 Tailwind CSS 编译）
+- 尽量使用 `backend/app/schemas/` 中的 FastAPI 响应模型
+- 持久化存储操作集中在 `backend/app/repositories/`
+- 上游 API 调用集中在 `backend/app/integrations/`
+- 浏览器请求保持同源 `/api/*` 路径，不要引入前端直连跨域后端
 - 不要在仓库文件中保存真实 API Key
 - 除非明确要求，否则不要提交生成图片或运行时 Gallery 元数据
 - 除非明确要求改变任务生命周期，否则保留现有异步生成与 SSE 进度机制
